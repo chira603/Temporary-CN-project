@@ -1,0 +1,202 @@
+DNS RESOLUTION SIMULATOR - USAGE GUIDE
+========================================
+
+QUICK START
+-----------
+
+Option 1: Using the startup script (Recommended)
+   ./start.sh
+
+Option 2: Manual startup
+   Terminal 1: node backend/src/server.js
+   Terminal 2: cd frontend && npm run dev
+
+Option 3: Using Docker
+   docker-compose up --build
+
+ACCESSING THE APPLICATION
+--------------------------
+Frontend: http://localhost:3001
+Backend API: http://localhost:5001
+
+FEATURES
+--------
+
+1. DNS Query Input
+   - Enter any domain name (e.g., google.com, github.com)
+   - Click example domains for quick testing
+   - Click "Resolve" to start the simulation
+
+2. Configuration Panel
+   - Resolution Mode: Choose between Recursive or Iterative
+   - Record Type: Select A, AAAA, CNAME, MX, NS, TXT, SOA
+   - Cache Settings: Enable/disable cache and adjust TTL
+   - Network Simulation: Adjust latency (10-500ms) and packet loss (0-50%)
+   - Security: Enable DNSSEC validation
+   - Advanced: Simulate random failures
+
+3. Visualization Panel
+   - Interactive animated flow diagram showing DNS resolution steps
+   - Play/Pause controls to step through the resolution process
+   - Real-time packet animation
+   - Server highlighting during active queries
+   - Detailed step information with timing
+
+4. Results Panel
+   - Timeline view: Expandable steps with detailed information
+   - Summary view: Overview of resolution statistics
+   - DNS packet structure display
+   - Query and response details
+   - Explanations for each step
+
+EDUCATIONAL FEATURES
+--------------------
+
+Browser Cache:
+   - First level of DNS caching
+   - Fastest response time
+   - Typically 5-30 minutes TTL
+
+OS Cache:
+   - Operating system level cache
+   - Second level of caching
+   - Shared across all applications
+
+Recursive Resolution:
+   - Client sends query to recursive resolver
+   - Resolver handles all the work
+   - Queries root, TLD, and authoritative servers
+   - Returns final answer to client
+
+Iterative Resolution:
+   - Client queries each server directly
+   - Root server provides TLD server referral
+   - TLD server provides authoritative server referral
+   - Client queries authoritative server for final answer
+
+DNSSEC:
+   - Digital signature validation
+   - Chain of trust verification
+   - Protection against DNS spoofing
+
+NETWORK SIMULATION
+------------------
+
+Latency:
+   - Simulates network delay
+   - Affects all DNS queries
+   - Range: 10-500ms
+
+Packet Loss:
+   - Simulates unreliable networks
+   - Triggers retry mechanisms
+   - Range: 0-50%
+
+RECORD TYPES
+------------
+
+A: IPv4 address
+AAAA: IPv6 address
+CNAME: Canonical name (alias)
+MX: Mail exchange server
+NS: Name server
+TXT: Text records
+SOA: Start of authority
+
+API ENDPOINTS
+-------------
+
+Health Check:
+   GET http://localhost:5001/api/health
+
+DNS Resolution:
+   POST http://localhost:5001/api/resolve
+   Body: {
+     "domain": "example.com",
+     "recordType": "A",
+     "mode": "recursive",
+     "config": {
+       "cacheEnabled": true,
+       "cacheTTL": 300,
+       "networkLatency": 50,
+       "packetLoss": 0,
+       "dnssecEnabled": false
+     }
+   }
+
+TROUBLESHOOTING
+---------------
+
+Port already in use:
+   - Backend uses port 5001
+   - Frontend uses port 3001
+   - Change ports in backend/src/server.js and frontend/vite.config.js
+
+Dependencies not installed:
+   - Run: npm install (root directory)
+   - Run: cd frontend && npm install
+
+Docker issues:
+   - Ensure Docker and docker-compose are installed
+   - Run: docker-compose down && docker-compose up --build
+
+TECHNOLOGY STACK
+----------------
+
+Backend:
+   - Node.js with Express
+   - Native DNS module
+   - dns-packet for packet structure
+   - node-cache for caching
+
+Frontend:
+   - React.js
+   - D3.js for visualizations
+   - Vite for development
+   - Axios for API calls
+
+Containerization:
+   - Docker
+   - docker-compose
+
+PERFORMANCE
+-----------
+
+The simulation includes realistic timing:
+   - Browser cache: ~10ms
+   - OS cache: ~20ms
+   - Network latency: Configurable (default 50ms)
+   - DNS query: Actual DNS resolution time
+
+SECURITY CONSIDERATIONS
+-----------------------
+
+This is a simulation tool for educational purposes:
+   - Uses real DNS queries for accurate results
+   - Simulates DNSSEC validation
+   - Does not implement actual cryptographic validation
+   - Not suitable for production DNS resolution
+
+BROWSER COMPATIBILITY
+---------------------
+
+Tested on:
+   - Chrome 90+
+   - Firefox 88+
+   - Safari 14+
+   - Edge 90+
+
+CONTRIBUTING
+------------
+
+The application is fully functional and ready to use.
+All components are modular and well-documented.
+
+SUPPORT
+-------
+
+For issues or questions, check:
+   - Browser console for frontend errors
+   - Terminal output for backend errors
+   - Network tab for API communication
+
