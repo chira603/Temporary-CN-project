@@ -1176,6 +1176,65 @@
   border-radius: 10px;
 }
 
+/* Timing Item Enhanced Styles */
+.timing-item.measured {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(5, 150, 105, 0.05) 100%);
+  border-left: 3px solid #10b981;
+}
+
+.timing-item.network {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(37, 99, 235, 0.05) 100%);
+  border-left: 3px solid #3b82f6;
+}
+
+.timing-item.server {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(217, 119, 6, 0.05) 100%);
+  border-left: 3px solid #f59e0b;
+}
+
+.timing-item.metadata {
+  background: rgba(107, 114, 128, 0.03);
+  border-left: 3px solid #9ca3af;
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+.timing-breakdown-detail {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
+  border-left: 2px solid rgba(102, 126, 234, 0.3);
+}
+
+.timing-breakdown-detail code {
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.measurement-note {
+  margin-top: 12px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(37, 99, 235, 0.05) 100%);
+  border-left: 4px solid #3b82f6;
+  border-radius: 6px;
+}
+
+.measurement-note strong {
+  color: #1e40af;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.measurement-note p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #1e3a8a;
+  line-height: 1.6;
+}
+
 /* Responsive Design for New Sections */
 @media (max-width: 768px) {
   .message-flow {

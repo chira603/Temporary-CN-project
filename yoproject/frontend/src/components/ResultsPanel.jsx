@@ -175,42 +175,104 @@ ${packet.answers?.map(a => `  Name: ${a.name}\n  Type: ${a.type}\n  Class: ${a.c
   };
 
   const getTimingExplanation = (step) => {
-    if (!step.timing && !step.latency) return null;
+    if (!step.timing && !step.latency && !step.timingDetails) return null;
     
     const explanations = [];
     
-    if (step.response?.cached) {
-      explanations.push({
-        metric: 'Cache Lookup',
-        value: `${step.timing}ms`,
-        description: 'Time to retrieve record from local cache (RAM/disk access)',
-        benchmark: 'Typical: 1-10ms'
-      });
-    } else if (step.latency) {
-      explanations.push({
-        metric: 'Network Latency',
-        value: `${step.latency}ms`,
-        description: 'Round-trip time (RTT) for packet to reach server and return',
-        benchmark: step.latency < 50 ? '⚡ Excellent' : step.latency < 150 ? '✅ Good' : step.latency < 300 ? '⚠️ Moderate' : '❌ High'
-      });
+    // Check if we have detailed timing measurements
+    if (step.timingDetails && step.timingDetails.measured) {
+      const td = step.timingDetails;
       
-      if (step.timing > step.latency) {
-        const processingTime = step.timing - step.latency;
+      // RTT breakdown
+      if (td.rtt) {
         explanations.push({
-          metric: 'Server Processing',
-          value: `${processingTime}ms`,
-          description: 'Time for server to process query, lookup zone files, and build response',
-          benchmark: processingTime < 20 ? '⚡ Fast' : processingTime < 50 ? '✅ Normal' : '⚠️ Slow'
+          metric: 'Round-Trip Time (RTT)',
+          value: `${td.rtt}ms`,
+          description: 'Total time from query sent to response received (measured by client/resolver)',
+          benchmark: td.rtt < 50 ? '⚡ Excellent' : td.rtt < 150 ? '✅ Good' : td.rtt < 300 ? '⚠️ Moderate' : '❌ High',
+          measured: true,
+          breakdown: td.breakdown
+        });
+        
+        // Network delay component
+        if (td.networkDelay) {
+          explanations.push({
+            metric: 'Network Delay',
+            value: `${td.networkDelay}ms`,
+            description: 'Time for packets to travel through network (both directions)',
+            benchmark: td.networkDelay < 100 ? '⚡ Fast' : td.networkDelay < 200 ? '✅ Normal' : '⚠️ Slow',
+            component: 'network'
+          });
+        }
+        
+        // Server processing component
+        if (td.serverProcessing) {
+          explanations.push({
+            metric: 'Server Processing',
+            value: `${td.serverProcessing}ms`,
+            description: 'Time server spent processing query, looking up records, building response',
+            benchmark: td.serverProcessing < 20 ? '⚡ Fast' : td.serverProcessing < 50 ? '✅ Normal' : '⚠️ Slow',
+            component: 'server'
+          });
+        }
+      }
+      
+      // Query timestamp
+      if (td.queryTimestamp) {
+        explanations.push({
+          metric: 'Query Sent At',
+          value: new Date(td.queryTimestamp).toISOString(),
+          description: 'Timestamp when client sent the DNS query',
+          benchmark: '',
+          metadata: true
         });
       }
+      
+      // Response timestamp
+      if (td.responseTimestamp) {
+        explanations.push({
+          metric: 'Response Received At',
+          value: new Date(td.responseTimestamp).toISOString(),
+          description: 'Timestamp when client received the DNS response',
+          benchmark: '',
+          metadata: true
+        });
+      }
+    } else {
+      // Fallback to basic timing
+      if (step.response?.cached) {
+        explanations.push({
+          metric: 'Cache Lookup',
+          value: `${step.timing}ms`,
+          description: 'Time to retrieve record from local cache (RAM/disk access)',
+          benchmark: 'Typical: 1-10ms'
+        });
+      } else if (step.latency) {
+        explanations.push({
+          metric: 'Network Latency',
+          value: `${step.latency}ms`,
+          description: 'Round-trip time (RTT) for packet to reach server and return',
+          benchmark: step.latency < 50 ? '⚡ Excellent' : step.latency < 150 ? '✅ Good' : step.latency < 300 ? '⚠️ Moderate' : '❌ High'
+        });
+        
+        if (step.timing > step.latency) {
+          const processingTime = step.timing - step.latency;
+          explanations.push({
+            metric: 'Server Processing',
+            value: `${processingTime}ms`,
+            description: 'Time for server to process query, lookup zone files, and build response',
+            benchmark: processingTime < 20 ? '⚡ Fast' : processingTime < 50 ? '✅ Normal' : '⚠️ Slow'
+          });
+        }
+      }
+      
+      explanations.push({
+        metric: 'Total Step Time',
+        value: `${step.timing}ms`,
+        description: 'Complete time for this step including all network and processing delays',
+        benchmark: ''
+      });
     }
-    
-    explanations.push({
-      metric: 'Total Step Time',
-      value: `${step.timing}ms`,
-      description: 'Complete time for this step including all network and processing delays',
-      benchmark: ''
-    });
     
     return explanations;
   };
@@ -464,9 +526,12 @@ ${packet.answers?.map(a => `  Name: ${a.name}\n  Type: ${a.type}\n  Class: ${a.c
                     <h5>⏱️ Timing Breakdown</h5>
                     <div className="timing-details">
                       {timingDetails.map((timing, idx) => (
-                        <div key={idx} className="timing-item">
+                        <div key={idx} className={`timing-item ${timing.component || ''} ${timing.metadata ? 'metadata' : ''} ${timing.measured ? 'measured' : ''}`}>
                           <div className="timing-header">
-                            <span className="timing-metric">{timing.metric}</span>
+                            <span className="timing-metric">
+                              {timing.measured && '📊 '}
+                              {timing.metric}
+                            </span>
                             <span className="timing-value">{timing.value}</span>
                           </div>
                           <div className="timing-info">
@@ -474,17 +539,28 @@ ${packet.answers?.map(a => `  Name: ${a.name}\n  Type: ${a.type}\n  Class: ${a.c
                             {timing.benchmark && (
                               <span className="timing-benchmark">{timing.benchmark}</span>
                             )}
+                            {timing.breakdown && (
+                              <div className="timing-breakdown-detail">
+                                <code>{timing.breakdown}</code>
+                              </div>
+                            )}
                           </div>
                         </div>
                       ))}
                       <div className="timing-explanation">
                         <p><strong>How is timing measured?</strong></p>
                         <ul>
+                          <li><strong>Client/Resolver timestamps:</strong> 📊 Measured using Date.now() when queries are sent and responses received</li>
+                          <li><strong>RTT (Round-Trip Time):</strong> responseTimestamp - queryTimestamp = Total time for query + network + processing + response</li>
+                          <li><strong>Network delay:</strong> Estimated physical packet transmission time (both directions)</li>
+                          <li><strong>Server processing:</strong> RTT - Network delay = Time server spent handling the query</li>
                           <li><strong>Cache hits:</strong> Measured from query receipt to response preparation (RAM/disk I/O)</li>
-                          <li><strong>Network queries:</strong> Includes DNS packet serialization (1-2ms) + network RTT + server processing + response parsing (1-2ms)</li>
-                          <li><strong>RTT (Round-Trip Time):</strong> Physical time for packets to travel through network infrastructure</li>
-                          <li><strong>Server processing:</strong> Zone file lookup, DNSSEC signing, response building</li>
                         </ul>
+                        <div className="measurement-note">
+                          <strong>⚠️ Note:</strong> DNS packets don't carry timing data. Clients measure RTT by comparing 
+                          timestamps when they send queries vs. when they receive responses. Server processing time is 
+                          calculated by subtracting estimated network delay from total RTT.
+                        </div>
                       </div>
                     </div>
                   </div>

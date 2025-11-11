@@ -257,6 +257,8 @@ class DNSResolver {
 
   async recursiveResolution(domain, recordType, settings) {
     const stepStart = Date.now();
+    const queryTimestamp = Date.now(); // Client-side timestamp when query is sent
+    
     await this.simulateLatency(settings.networkLatency);
 
     // Query recursive resolver
@@ -279,6 +281,9 @@ class DNSResolver {
       }
     }
     
+    const responseTimestamp = Date.now(); // Client-side timestamp when response received
+    const rtt = responseTimestamp - queryTimestamp; // Measured Round-Trip Time
+    
     this.steps.push({
       stage: 'recursive_resolver',
       name: 'Recursive Resolver Query',
@@ -291,6 +296,13 @@ class DNSResolver {
         recursionDesired: true
       },
       timing: Date.now() - stepStart,
+      timingDetails: {
+        queryTimestamp: queryTimestamp,
+        responseTimestamp: responseTimestamp,
+        rtt: rtt,
+        measured: true,
+        explanation: 'RTT measured by client: time from sending query to receiving response'
+      },
       packet: this.generateQueryPacket(domain, recordType, true),
       explanation: 'The recursive resolver will handle all the work of finding the authoritative answer by querying multiple servers if needed.'
     });
@@ -345,7 +357,10 @@ class DNSResolver {
     const sld = parts.slice(-2).join('.');
 
     // Step 1: Recursive Resolver → Root Server (QUERY)
+    const rootQueryStart = Date.now();
     await this.simulateLatency(settings.networkLatency);
+    const rootQuerySent = Date.now();
+    
     this.steps.push({
       stage: 'recursive_to_root_query',
       name: '🔄 Recursive Resolver → Root Server',
@@ -353,13 +368,24 @@ class DNSResolver {
       server: DNS_SERVERS.root[0],
       query: { domain, type: recordType, class: 'IN' },
       timing: settings.networkLatency,
+      timingDetails: {
+        queryTimestamp: rootQueryStart,
+        sentTimestamp: rootQuerySent,
+        measured: true,
+        networkDelay: settings.networkLatency,
+        explanation: 'Query transmission time from resolver to root server'
+      },
       messageType: 'QUERY',
       direction: 'request',
       explanation: `Recursive resolver asks root server: "Where can I find information about .${tld} domains?"`
     });
 
     // Step 2: Root Server → Recursive Resolver (RESPONSE - Referral)
-    await this.simulateLatency(settings.networkLatency);
+    const rootProcessingTime = 5 + Math.floor(Math.random() * 10); // Simulated server processing
+    await this.simulateLatency(settings.networkLatency + rootProcessingTime);
+    const rootResponseReceived = Date.now();
+    const rootRTT = rootResponseReceived - rootQueryStart;
+    
     this.steps.push({
       stage: 'root_to_recursive_response',
       name: '⬅️ Root Server → Recursive Resolver',
@@ -376,14 +402,26 @@ class DNSResolver {
         rcode: 'NOERROR',
         authoritative: false
       },
-      timing: settings.networkLatency,
+      timing: rootRTT,
+      timingDetails: {
+        responseTimestamp: rootResponseReceived,
+        rtt: rootRTT,
+        networkDelay: settings.networkLatency * 2, // Round trip
+        serverProcessing: rootProcessingTime,
+        measured: true,
+        breakdown: `RTT: ${rootRTT}ms = Network (${settings.networkLatency * 2}ms) + Server Processing (${rootProcessingTime}ms)`,
+        explanation: 'Total time from query sent to response received at recursive resolver'
+      },
       messageType: 'RESPONSE',
       direction: 'response',
       explanation: `Root server responds: "I don't have the answer, but the .${tld} TLD nameservers do. Here are their addresses (glue records): a.${tld}-servers.net = 192.5.6.30"`
     });
 
     // Step 3: Recursive Resolver → TLD Server (QUERY)
+    const tldQueryStart = Date.now();
     await this.simulateLatency(settings.networkLatency);
+    const tldQuerySent = Date.now();
+    
     this.steps.push({
       stage: 'recursive_to_tld_query',
       name: `🔄 Recursive Resolver → .${tld} TLD Server`,
@@ -391,13 +429,24 @@ class DNSResolver {
       server: { name: `a.${tld}-servers.net`, ip: '192.5.6.30', type: 'tld' },
       query: { domain, type: recordType, class: 'IN' },
       timing: settings.networkLatency,
+      timingDetails: {
+        queryTimestamp: tldQueryStart,
+        sentTimestamp: tldQuerySent,
+        measured: true,
+        networkDelay: settings.networkLatency,
+        explanation: 'Query transmission time from resolver to TLD server'
+      },
       messageType: 'QUERY',
       direction: 'request',
       explanation: `Recursive resolver asks TLD server: "Where can I find the authoritative nameservers for ${sld}?"`
     });
 
     // Step 4: TLD Server → Recursive Resolver (RESPONSE - Referral)
-    await this.simulateLatency(settings.networkLatency);
+    const tldProcessingTime = 8 + Math.floor(Math.random() * 15); // TLD processing time
+    await this.simulateLatency(settings.networkLatency + tldProcessingTime);
+    const tldResponseReceived = Date.now();
+    const tldRTT = tldResponseReceived - tldQueryStart;
+    
     this.steps.push({
       stage: 'tld_to_recursive_response',
       name: `⬅️ .${tld} TLD Server → Recursive Resolver`,
@@ -414,14 +463,26 @@ class DNSResolver {
         rcode: 'NOERROR',
         authoritative: false
       },
-      timing: settings.networkLatency,
+      timing: tldRTT,
+      timingDetails: {
+        responseTimestamp: tldResponseReceived,
+        rtt: tldRTT,
+        networkDelay: settings.networkLatency * 2,
+        serverProcessing: tldProcessingTime,
+        measured: true,
+        breakdown: `RTT: ${tldRTT}ms = Network (${settings.networkLatency * 2}ms) + Server Processing (${tldProcessingTime}ms)`,
+        explanation: 'Total time from query sent to response received at recursive resolver'
+      },
       messageType: 'RESPONSE',
       direction: 'response',
       explanation: `TLD server responds: "The authoritative nameservers for ${sld} are ns1.${sld} and ns2.${sld}. Here are their IP addresses (glue records): ns1.${sld} = 93.184.216.34"`
     });
 
     // Step 5: Recursive Resolver → Authoritative Server (QUERY)
+    const authQueryStart = Date.now();
     await this.simulateLatency(settings.networkLatency);
+    const authQuerySent = Date.now();
+    
     this.steps.push({
       stage: 'recursive_to_auth_query',
       name: `🔄 Recursive Resolver → Authoritative Server`,
@@ -429,6 +490,13 @@ class DNSResolver {
       server: { name: `ns1.${sld}`, ip: '93.184.216.34', type: 'authoritative' },
       query: { domain, type: recordType, class: 'IN' },
       timing: settings.networkLatency,
+      timingDetails: {
+        queryTimestamp: authQueryStart,
+        sentTimestamp: authQuerySent,
+        measured: true,
+        networkDelay: settings.networkLatency,
+        explanation: 'Query transmission time from resolver to authoritative server'
+      },
       messageType: 'QUERY',
       direction: 'request',
       explanation: `Recursive resolver asks authoritative server: "What is the ${recordType} record for ${domain}?"`
@@ -440,7 +508,11 @@ class DNSResolver {
     const querySucceeded = !isSimulated;
 
     // Step 7: Authoritative Server → Recursive Resolver (RESPONSE - Answer)
-    await this.simulateLatency(settings.networkLatency);
+    const authProcessingTime = 10 + Math.floor(Math.random() * 20); // Auth server processing
+    await this.simulateLatency(settings.networkLatency + authProcessingTime);
+    const authResponseReceived = Date.now();
+    const authRTT = authResponseReceived - authQueryStart;
+    
     this.steps.push({
       stage: 'auth_to_recursive_response',
       name: `⬅️ Authoritative Server → Recursive Resolver`,
@@ -456,7 +528,16 @@ class DNSResolver {
         authoritative: true,
         recursionAvailable: false
       },
-      timing: settings.networkLatency,
+      timing: authRTT,
+      timingDetails: {
+        responseTimestamp: authResponseReceived,
+        rtt: authRTT,
+        networkDelay: settings.networkLatency * 2,
+        serverProcessing: authProcessingTime,
+        measured: true,
+        breakdown: `RTT: ${authRTT}ms = Network (${settings.networkLatency * 2}ms) + Server Processing (${authProcessingTime}ms)`,
+        explanation: 'Total time from query sent to response received at recursive resolver'
+      },
       messageType: 'RESPONSE',
       direction: 'response',
       packet: this.generateResponsePacket(domain, recordType, result),

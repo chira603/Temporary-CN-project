@@ -3,6 +3,7 @@ const cors = require('cors');
 const dnsResolver = require('./dnsResolver');
 const liveDNSResolver = require('./liveDNSResolver');
 const attackSimulator = require('./attackSimulator');
+const securitySimulator = require('./securitySimulator');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -109,6 +110,39 @@ app.get('/api/attack-types', (req, res) => {
   });
 });
 
+// DNS Security Protocol Simulation endpoint
+app.post('/api/simulate-security', async (req, res) => {
+  try {
+    const { protocolType, domain, config } = req.body;
+
+    if (!protocolType) {
+      return res.status(400).json({ error: 'Protocol type is required' });
+    }
+
+    console.log(`[SECURITY SIMULATION] Simulating ${protocolType} protocol for ${domain || 'example.com'}`);
+
+    const result = await securitySimulator.simulateProtocol(protocolType, {
+      domain: domain || 'example.com',
+      ...config
+    });
+
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    console.error('Security simulation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get available security protocols
+app.get('/api/security-protocols', (req, res) => {
+  res.json({
+    protocols: securitySimulator.getAvailableProtocols()
+  });
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -117,6 +151,7 @@ app.get('/api/health', (req, res) => {
 app.listen(PORT, () => {
   console.log(`DNS Simulation Server running on port ${PORT}`);
   console.log(`Attack simulation endpoints available at /api/simulate-attack`);
+  console.log(`Security protocol endpoints available at /api/simulate-security`);
 });
 
 

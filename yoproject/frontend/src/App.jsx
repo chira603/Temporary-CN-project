@@ -7,9 +7,7 @@ import DNSSECChainVisualization from './components/DNSSECChainVisualization';
 import TutorialWizard from './components/TutorialWizard';
 import DNSGlossary from './components/DNSGlossary';
 import AttackScenariosPanel from './components/AttackScenariosPanel';
-import DNSModeComparison from './components/DNSModeComparison';
-import DNSSecurityPanel from './components/DNSSecurityPanel';
-import PacketLossVisualization from './components/PacketLossVisualization';
+import SecurityProtocolsPanel from './components/SecurityProtocolsPanel';
 import { resolveDNS } from './services/api';
 import './styles/App.css';
 
@@ -20,9 +18,7 @@ function App() {
   const [showTutorial, setShowTutorial] = useState(false);
   const [showGlossary, setShowGlossary] = useState(false);
   const [showAttackScenarios, setShowAttackScenarios] = useState(false);
-  const [showModeComparison, setShowModeComparison] = useState(false);
-  const [showSecurityPanel, setShowSecurityPanel] = useState(false);
-  const [showPacketLoss, setShowPacketLoss] = useState(false);
+  const [showSecurityProtocols, setShowSecurityProtocols] = useState(false);
   const [config, setConfig] = useState({
     queryMode: 'deterministic', // 'deterministic' or 'live'
     mode: 'recursive',
@@ -105,32 +101,18 @@ function App() {
             📚 Glossary
           </button>
           <button 
-            className="header-btn comparison-btn"
-            onClick={() => setShowModeComparison(true)}
-            title="Compare Recursive vs Iterative"
-          >
-            ⚖️ Mode Comparison
-          </button>
-          <button 
-            className="header-btn security-btn"
-            onClick={() => setShowSecurityPanel(true)}
-            title="DNS Security & Privacy (DoH, DoT, DNSSEC)"
-          >
-            🔐 Security
-          </button>
-          <button 
-            className="header-btn packet-loss-btn"
-            onClick={() => setShowPacketLoss(true)}
-            title="Packet Loss Impact on DNS"
-          >
-            📡 Packet Loss
-          </button>
-          <button 
             className="header-btn attack-btn"
             onClick={() => setShowAttackScenarios(true)}
             title="View DNS Attack Scenarios"
           >
             🛡️ Attack Scenarios
+          </button>
+          <button 
+            className="header-btn security-btn"
+            onClick={() => setShowSecurityProtocols(true)}
+            title="Learn DNS Security Protocols"
+          >
+            🔐 Security Protocols
           </button>
         </div>
       </header>
@@ -219,31 +201,17 @@ function App() {
         onClose={() => setShowGlossary(false)}
       />
 
-      {/* Mode Comparison Panel */}
-      {showModeComparison && (
-        <DNSModeComparison 
-          onClose={() => setShowModeComparison(false)}
-        />
-      )}
-
-      {/* DNS Security Panel */}
-      {showSecurityPanel && (
-        <DNSSecurityPanel 
-          onClose={() => setShowSecurityPanel(false)}
-        />
-      )}
-
-      {/* Packet Loss Visualization */}
-      {showPacketLoss && (
-        <PacketLossVisualization 
-          onClose={() => setShowPacketLoss(false)}
-        />
-      )}
-
       {/* Attack Scenarios Panel */}
       {showAttackScenarios && (
         <AttackScenariosPanel 
           onClose={() => setShowAttackScenarios(false)}
+        />
+      )}
+
+      {/* Security Protocols Panel */}
+      {showSecurityProtocols && (
+        <SecurityProtocolsPanel 
+          onClose={() => setShowSecurityProtocols(false)}
         />
       )}
     </div>
