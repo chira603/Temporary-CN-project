@@ -1164,13 +1164,13 @@ function AttackScenariosPanel({ onClose }) {
 
     // Define margins to ensure nodes fit within bounds (with safe padding for labels)
     const marginX = 100; // Horizontal margin
-    const marginY = 80; // Vertical margin
+    const marginY = 200; // Increased vertical margin to shift animation down more
     const safeWidth = width - (marginX * 2);
     const safeHeight = height - (marginY * 2);
     
     // Calculate half width and half height for centering
     const halfWidth = width / 2;
-    const halfHeight = height / 2;
+    const halfHeight = height / 2 + 80; // Shift center down by 40px
     
     // Define actors/nodes with proportional positioning (all within bounds)
     const actorDefinitions = {
@@ -1788,7 +1788,7 @@ function AttackScenariosPanel({ onClose }) {
         const warningBox = g.append('rect')
           .attr('x', centerX - 80)
           .attr('y', centerY + 30)
-          .attr('width', 160)
+          .attr('width', 200)
           .attr('height', 30)
           .attr('rx', 4)
           .attr('fill', 'rgba(239, 68, 68, 0.1)')
