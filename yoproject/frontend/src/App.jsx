@@ -1,19 +1,19 @@
 import React, { useState, useEffect } from 'react';
 // FIX: Changed all import paths to be absolute from /src/
-// NOTE: Removed duplicated mixed absolute/relative imports that caused redeclaration errors.
-// Prefer a single consistent (relative) import style inside frontend.
-import QueryInput from './components/QueryInput';
-import ConfigPanel from './components/ConfigPanel';
-import VisualizationPanel from './components/VisualizationPanel';
-import ResultsPanel from './components/ResultsPanel';
-import DNSSECChainVisualization from './components/DNSSECChainVisualization';
-import TutorialWizard from './components/TutorialWizard';
-import DNSGlossary from './components/DNSGlossary';
-import AttackScenariosPanel from './components/AttackScenariosPanel';
-import SecurityProtocolsPanel from './components/SecurityProtocolsPanel';
-import ErrorBoundary from './components/ErrorBoundary';
-import { resolveDNS } from './services/api';
-import './styles/App.css';
+import QueryInput from '/src/components/QueryInput';
+import ConfigPanel from '/src/components/ConfigPanel';
+import VisualizationPanel from '/src/components/VisualizationPanel';
+import ResultsPanel from '/src/components/ResultsPanel';
+import DNSSECChainVisualization from '/src/components/DNSSECChainVisualization';
+import TutorialWizard from '/src/components/TutorialWizard';
+import DNSGlossary from '/src/components/DNSGlossary';
+import AttackScenariosPanel from '/src/components/AttackScenariosPanel';
+import DNSModeComparison from '/src/components/DNSModeComparison';
+import DNSSecurityPanel from '/src/components/DNSSecurityPanel';
+import PacketLossVisualization from '/src/components/PacketLossVisualization';
+import ErrorBoundary from '/src/components/ErrorBoundary';
+import { resolveDNS } from '/src/services/api';
+import '/src/styles/App.css';
 
 function App() {
   const [loading, setLoading] = useState(false);

@@ -157,7 +157,6 @@ app.get('/api/attack-types', (req, res) => {
   });
 });
 
-// Health check endpoint (No changes needed)
 // DNS Security Protocol Simulation endpoint
 app.post('/api/simulate-security', async (req, res) => {
   try {
