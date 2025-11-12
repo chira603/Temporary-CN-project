@@ -20,7 +20,8 @@ function QueryInput({ onResolve, loading }) {
   return (
     <div className="query-input-container">
       <h2>DNS Query</h2>
-      <form onSubmit={handleSubmit}>
+      {/* Place the Resolve button at the bottom of the box for better layout */}
+      <form onSubmit={handleSubmit} className="query-form">
         <div className="input-group">
           <input
             type="text"
@@ -30,24 +31,27 @@ function QueryInput({ onResolve, loading }) {
             disabled={loading}
             className="domain-input"
           />
-          <button type="submit" disabled={loading || !domain.trim()} className="resolve-button">
-            {loading ? 'Resolving...' : 'Resolve'}
-          </button>
         </div>
+
+        <div className="examples">
+          <span>Try:</span>
+          {exampleDomains.map(example => (
+            <button
+              key={example}
+              type="button"
+              onClick={() => handleExampleClick(example)}
+              className="example-button"
+              disabled={loading}
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+
+        <button type="submit" disabled={loading || !domain.trim()} className="resolve-button bottom">
+          {loading ? 'Resolving...' : 'Resolve'}
+        </button>
       </form>
-      <div className="examples">
-        <span>Try:</span>
-        {exampleDomains.map(example => (
-          <button
-            key={example}
-            onClick={() => handleExampleClick(example)}
-            className="example-button"
-            disabled={loading}
-          >
-            {example}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }

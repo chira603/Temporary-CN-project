@@ -1286,23 +1286,8 @@ function VisualizationPanel({ results }) {
       <div className="panel-header">
         <h2>📊 DNS Resolution Flow</h2>
         <div className="view-controls">
-          {isLiveMode ? (
+          {isLiveMode && (
             <span className="live-indicator">🔴 Live Mode</span>
-          ) : (
-            <>
-              <button
-                className={`view-toggle ${viewMode === 'network' ? 'active' : ''}`}
-                onClick={() => setViewMode('network')}
-              >
-                🌐 Network
-              </button>
-              <button
-                className={`view-toggle ${viewMode === 'timeline' ? 'active' : ''}`}
-                onClick={() => setViewMode('timeline')}
-              >
-                📈 Timeline
-              </button>
-            </>
           )}
           <button
             className="legend-toggle"

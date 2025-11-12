@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-// Use consistent relative imports; remove non-existent components
 import QueryInput from './components/QueryInput';
 import ConfigPanel from './components/ConfigPanel';
 import VisualizationPanel from './components/VisualizationPanel';
@@ -22,10 +21,10 @@ function App() {
   const [showAttackScenarios, setShowAttackScenarios] = useState(false);
   const [showSecurityProtocols, setShowSecurityProtocols] = useState(false);
   const [config, setConfig] = useState({
-    queryMode: 'deterministic', // 'deterministic' or 'live'
+    queryMode: 'deterministic',
     mode: 'recursive',
     recordType: 'A',
-    cacheEnabled: true,
+    cacheEnabled: false,
     cacheTTL: 300,
     networkLatency: 50,
     packetLoss: 0,
@@ -33,14 +32,12 @@ function App() {
     simulateDNSSECFailure: false,
     customDNS: null,
     simulateFailures: false,
-    useRealDelegation: false // Use real DNS delegation data
+    useRealDelegation: false
   });
 
-  // Check if tutorial should be shown (first time users)
   useEffect(() => {
     const tutorialCompleted = localStorage.getItem('dnsSimulatorTutorialCompleted');
     if (!tutorialCompleted) {
-      // Show tutorial after a short delay for better UX
       const timer = setTimeout(() => {
         setShowTutorial(true);
       }, 1000);
@@ -55,8 +52,6 @@ function App() {
 
     try {
       const data = await resolveDNS(domain, config.recordType, config.mode, config);
-      // Attach the config used for this query to the results object
-      // This makes it easier for child components to read
       const resultsWithConfig = { ...data, config: config };
       setResults(resultsWithConfig);
     } catch (err) {
@@ -203,7 +198,6 @@ function App() {
         onClose={() => setShowTutorial(false)}
         onComplete={() => {
           setShowTutorial(false);
-          // Optionally show a success message or unlock features
         }}
       />
 

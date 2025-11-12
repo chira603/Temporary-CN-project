@@ -12,10 +12,15 @@
   font-size: 1.5rem;
 }
 
+.query-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .input-group {
   display: flex;
   gap: 10px;
-  margin-bottom: 15px;
 }
 
 .domain-input {
@@ -45,6 +50,12 @@
   font-size: 1rem;
   font-weight: 600;
   transition: all 0.3s ease;
+}
+
+/* Make the main Resolve button span full width at the bottom */
+.resolve-button.bottom {
+  width: 100%;
+  padding: 14px 16px;
 }
 
 .resolve-button:hover:not(:disabled) {

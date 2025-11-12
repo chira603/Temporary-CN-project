@@ -15,13 +15,14 @@
   margin-bottom: 12px;
   flex-wrap: wrap;
   gap: 15px;
+  background-color: #ffffff; /* white background as requested */
+  padding: 12px 16px;
+  border-radius: 12px;
 }
 
 .panel-header h2 {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  /* Unified heading style to match other panels (solid accent color like QueryInput) */
+  color: #667eea;
   font-size: 2rem;
   margin: 0;
   font-weight: 800;
