@@ -172,27 +172,31 @@
 
 .app-container {
   flex: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: 340px 1fr; /* fixed sidebar + flexible main */
+  align-items: start;
   gap: 20px;
   padding: 20px;
-  max-width: 1800px;
+  max-width: 1400px; /* reduce extreme stretching that causes overlaps */
   margin: 0 auto;
   width: 100%;
 }
 
 .left-panel {
-  width: 350px;
+  width: 340px;
   display: flex;
   flex-direction: column;
   gap: 20px;
+  position: sticky;
+  top: 20px;
+  align-self: start;
 }
 
 .main-panel {
-  flex: 1;
+  min-width: 0; /* allow content to shrink inside grid */
   display: flex;
   flex-direction: column;
   gap: 20px;
-  min-width: 0;
 }
 
 .error-message {
@@ -320,11 +324,13 @@
 
 @media (max-width: 1200px) {
   .app-container {
+    display: flex;
     flex-direction: column;
   }
 
   .left-panel {
     width: 100%;
+    position: static;
   }
 }
 

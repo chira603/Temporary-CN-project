@@ -7,12 +7,7 @@ const DynamicVisualization = ({ results, isLiveMode, currentStep }) => {
   const [hasPlayed, setHasPlayed] = useState(false);
   const vizRef = useRef(null); // hold d3 objects and helpers
 
-  // Control handlers
-  const handlePlay = () => {
-    // Start round-trip animation from the beginning
-    setIsPlaying(true);
-    setHasPlayed(false);
-  };
+  // No local control button; animation will auto-start on new results
 
   // Visualization (static) initialization: build nodes, layout, and containers
   useEffect(() => {
@@ -418,9 +413,9 @@ const DynamicVisualization = ({ results, isLiveMode, currentStep }) => {
     // Save refs for animation effect
     vizRef.current = { svg, g, edgesCompleted, servers, curvedPath, mapStageToEdge };
 
-    // Reset play state when results change
-    setIsPlaying(false);
+    // Reset and auto-start animation when results change
     setHasPlayed(false);
+    setIsPlaying(true);
 
   }, [results, isLiveMode]);
 
@@ -532,39 +527,8 @@ const DynamicVisualization = ({ results, isLiveMode, currentStep }) => {
 
   return (
     <div style={{ width: '100%', position: 'relative' }}>
-      {/* Minimal Control Panel: Play to end */}
-      <div style={{
-        background: '#334155',
-        padding: '12px',
-        borderRadius: '8px',
-        marginBottom: '12px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        justifyContent: 'center'
-      }}>
-        <button
-          onClick={handlePlay}
-          style={{
-            background: '#3b82f6',
-            color: '#fff',
-            border: 'none',
-            padding: '8px 24px',
-            borderRadius: '4px',
-            cursor: isPlaying ? 'not-allowed' : 'pointer',
-            fontSize: '14px',
-            fontWeight: 'bold'
-          }}
-          disabled={isPlaying}
-          title={isPlaying ? 'Playing...' : 'Play from start'}
-        >
-          {isPlaying ? '⏳ Playing…' : (hasPlayed ? '▶️ Replay' : '▶️ Play')}
-        </button>
-      </div>
-
-      {/* Visualization */}
-      <div style={{ width: '100%', height: '600px', background: '#1e293b', borderRadius: '8px', overflow: 'hidden' }}>
-        <svg ref={svgRef} style={{ display: 'block' }}></svg>
+      <div className="visualization-canvas">
+        <svg ref={svgRef} className="visualization-svg"></svg>
       </div>
     </div>
   );
