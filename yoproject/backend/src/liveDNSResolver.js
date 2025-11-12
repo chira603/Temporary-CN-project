@@ -1,510 +1,503 @@
-const dns = require('dns').promises;
+/*
+ * Live DNS Tracer - V2 (Descriptive & Robust)
+ *
+ * This version is rewritten to be "self-documenting." Each step added to
+ * the 'steps' array is a rich object with detailed, human-readable
+ * explanations and structured data that the frontend can parse.
+ * It also handles errors (like timeouts or glue failures) as
+ * explicit steps in the timeline instead of just failing.
+ */
+
 const dgram = require('dgram');
 const dnsPacket = require('dns-packet');
 
-// Record type mappings
-const RECORD_TYPES = {
-  'A': 1,
-  'AAAA': 28,
-  'CNAME': 5,
-  'MX': 15,
-  'NS': 2,
-  'TXT': 16,
-  'SOA': 6,
-  'PTR': 12
+// --- Server Metadata ---
+// This helps us provide friendly names for well-known IPs
+const SERVER_INFO = {
+  '198.41.0.4': { name: 'a.root-servers.net', type: 'Root' },
+  '199.9.14.201': { name: 'b.root-servers.net', type: 'Root' },
+  '192.33.4.12': { name: 'c.root-servers.net', type: 'Root' },
+  '199.7.91.13': { name: 'd.root-servers.net', type: 'Root' },
+  '192.203.230.10': { name: 'e.root-servers.net', type: 'Root' },
+  '192.5.5.241': { name: 'f.root-servers.net', type: 'Root' },
+  '192.112.36.4': { name: 'g.root-servers.net', type: 'Root' },
+  '198.97.190.53': { name: 'h.root-servers.net', type: 'Root' },
+  '192.36.148.17': { name: 'i.root-servers.net', type: 'Root' },
+  '192.58.128.30': { name: 'j.root-servers.net', type: 'Root' },
+  '193.0.14.129': { name: 'k.root-servers.net', type: 'Root' },
+  '199.7.83.42': { name: 'l.root-servers.net', type: 'Root' },
+  '202.12.27.33': { name: 'm.root-servers.net', type: 'Root' },
+  // Add common TLD servers if known, e.g.:
+  '192.41.162.30': { name: 'a.gtld-servers.net', type: 'TLD (.com)' },
+  // ... (and the IP from your screenshot)
+  '192.41.162.30': { name: 'a.gtld-servers.net', type: 'TLD (.com)' },
+  // Add common recursive resolvers
+  '8.8.8.8': { name: 'Google Public DNS', type: 'Recursive' },
+  '1.1.1.1': { name: 'Cloudflare DNS', type: 'Recursive' },
 };
 
-class LiveDNSResolver {
+const ROOT_SERVERS = [{ ip: '198.41.0.4', name: 'a.root-servers.net', type: 'Root' }];
+
+const RECORD_TYPES_REV = {
+  1: 'A', 2: 'NS', 5: 'CNAME', 6: 'SOA', 12: 'PTR', 15: 'MX', 16: 'TXT', 28: 'AAAA',
+};
+
+class LiveDNSTracer {
   constructor() {
     this.steps = [];
     this.totalTime = 0;
-    this.systemResolver = '8.8.8.8'; // Google DNS as default
+    this.cache = new Map(); // Simple cache for nameserver IPs
+    this.queryId = 1; // To track queries
   }
 
-  async resolve(domain, recordType = 'A', mode = 'recursive', config = {}) {
+  /**
+   * Helper to get server info or create a default object.
+   */
+  getServerInfo(ip, type = 'Unknown') {
+    if (SERVER_INFO[ip]) {
+      return { ...SERVER_INFO[ip], ip };
+    }
+    // Try to find by name in cache
+    for (const [name, cachedIp] of this.cache.entries()) {
+      if (cachedIp === ip) {
+        return { name, ip, type };
+      }
+    }
+    return { name: `Server (${ip})`, ip, type };
+  }
+
+  /**
+   * Main entry point.
+   */
+  async resolve(domain, recordType = 'A', mode = 'iterative', resolverIp = '8.8.8.8') {
     this.steps = [];
     this.totalTime = 0;
+    this.cache.clear();
     const startTime = Date.now();
-
-    const settings = {
-      cacheEnabled: config.cacheEnabled !== false,
-      dnssecEnabled: config.dnssecEnabled || false,
-      customDNS: config.customDNS || null,
-      timeout: 5000
-    };
+    this.queryId = 1;
 
     try {
-      // Step 1: Check system DNS cache (real check)
-      await this.checkSystemCache(domain, recordType, settings);
-
-      // Step 2: Perform actual DNS resolution
-      if (mode === 'recursive') {
-        await this.liveRecursiveResolution(domain, recordType, settings);
+      let finalAnswer = null;
+      if (mode === 'iterative') {
+        const rootServer = ROOT_SERVERS[0];
+        finalAnswer = await this.traceIterative(domain, recordType, rootServer.ip, rootServer.type);
       } else {
-        await this.liveIterativeResolution(domain, recordType, settings);
+        finalAnswer = await this.traceRecursive(domain, recordType, resolverIp);
       }
 
       this.totalTime = Date.now() - startTime;
-
       return {
         success: true,
-        domain,
-        recordType,
-        mode,
+        domain, recordType, mode,
+        answer: finalAnswer,
         steps: this.steps,
         totalTime: this.totalTime,
-        config: settings,
-        isLiveMode: true
       };
+
     } catch (error) {
+      // This catch block is for *fatal* errors.
+      // Non-fatal errors (like timeouts) are handled inside the trace.
       this.totalTime = Date.now() - startTime;
       
-      // Add error step
-      this.steps.push({
-        stage: 'error',
-        name: 'DNS Resolution Error',
-        description: `Failed to resolve ${domain}`,
-        timing: Date.now() - startTime,
-        error: error.message,
-        explanation: `Error occurred during DNS resolution: ${error.message}`
-      });
-
+      // Add a final, detailed error step if one wasn't added already
+      if (!this.steps.find(s => s.error)) {
+        this.addStep({
+          stage: 'error',
+          name: 'Resolution Failed',
+          explanation: `The resolution process failed unexpectedly. This often indicates a network issue or a problem with the first server in the chain (e.g., the root server).`,
+          error: error.message,
+          timing: 0,
+        });
+      }
+      
       return {
         success: false,
-        domain,
-        recordType,
-        mode,
+        domain, recordType, mode,
         error: error.message,
         steps: this.steps,
         totalTime: this.totalTime,
-        config: settings,
-        isLiveMode: true
       };
     }
   }
 
-  async checkSystemCache(domain, recordType, settings) {
+  /**
+   * Performs a REAL iterative query, starting from a known server.
+   */
+  async traceIterative(domain, recordType, serverIp, serverType) {
     const stepStart = Date.now();
-    
-    // We can't directly check the OS cache, but we can make a quick lookup
-    // to see if it's cached (will be very fast if cached)
-    let cached = false;
-    let cacheResult = null;
+    const server = this.getServerInfo(serverIp, serverType);
+    const query = { domain, type: recordType, class: 'IN', recursionDesired: false };
+    const queryNumber = this.queryId++;
 
-    try {
-      const quickStart = Date.now();
-      // Quick lookup - if it's in cache, this will be very fast (< 5ms)
-      const result = await Promise.race([
-        this.performDNSLookup(domain, recordType),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5))
-      ]);
-      
-      const lookupTime = Date.now() - quickStart;
-      
-      if (lookupTime < 5) {
-        cached = true;
-        cacheResult = result;
-      }
-    } catch (e) {
-      // Not in cache or timeout
-      cached = false;
-    }
-
-    this.steps.push({
-      stage: cached ? 'os_cache' : 'os_cache',
-      name: 'System DNS Cache Check',
-      description: 'Checking if DNS record exists in system resolver cache',
-      server: { name: 'System Resolver Cache', type: 'cache' },
-      query: {
-        domain,
-        type: recordType,
-        class: 'IN'
-      },
+    // --- 1. Add QUERY Step ---
+    this.addStep({
+      stage: `${serverType.toLowerCase()}_query`, // e.g., 'root_query', 'tld_query'
+      name: `(${queryNumber}) Querying ${server.type} Server`,
       messageType: 'QUERY',
-      direction: 'request',
-      response: cached ? {
-        found: true,
-        records: cacheResult.records,
-        ttl: cacheResult.ttl,
-        cached: true,
-        cacheType: 'system'
-      } : {
-        found: false,
-        message: 'Cache miss - proceeding to DNS servers',
-        cacheType: 'system'
-      },
-      timing: Date.now() - stepStart,
-      explanation: cached 
-        ? `✅ Cache hit! The system resolver has a cached copy of this DNS record (response time < 5ms indicates cache hit).`
-        : `❌ Cache miss. The system doesn't have this record cached, proceeding to query DNS servers.`
+      explanation: `To find the ${recordType} record for '${domain}', the client must first ask a ${server.type} server where to go next. Sending a non-recursive query to ${server.name} (${server.ip}).`,
+      server: server,
+      query: query,
+      timing: 0, // Will be updated by response step
     });
 
-    if (cached) {
-      throw new Error('CACHE_HIT');
-    }
-  }
-
-  async liveRecursiveResolution(domain, recordType, settings) {
-    const stepStart = Date.now();
-    const resolver = settings.customDNS || { name: 'System DNS', ip: this.systemResolver };
-
-    // Query the recursive resolver
-    this.steps.push({
-      stage: 'client_to_recursive_query',
-      name: 'Querying Recursive DNS Resolver',
-      description: `Sending query to ${resolver.name || resolver.ip}`,
-      server: resolver,
-      query: {
-        domain,
-        type: recordType,
-        class: 'IN',
-        recursionDesired: true
-      },
-      messageType: 'QUERY',
-      direction: 'request',
-      timing: Date.now() - stepStart,
-      explanation: `📡 Sending DNS query to recursive resolver at ${resolver.ip || 'system default'}. The resolver will handle all the work of finding the authoritative answer.`
-    });
-
-    // Perform actual DNS lookup
-    const lookupStart = Date.now();
-    let result;
-    let lookupError = null;
-
+    let response;
     try {
-      result = await this.performDNSLookup(domain, recordType);
+      // --- 2. Send the Query ---
+      response = await this.sendQuery(domain, recordType, serverIp, false);
     } catch (error) {
-      lookupError = error;
-      result = { records: [], ttl: 0, error: error.message };
+      // --- 2b. Handle Query FAILURE (e.g., Timeout) ---
+      const timing = Date.now() - stepStart;
+      this.addStep({
+        stage: 'error',
+        name: `(${queryNumber}) Query Failed`,
+        messageType: 'RESPONSE', // It's the *response* to the query
+        explanation: `The query sent to ${server.name} (${server.ip}) failed. This is most likely due to a network timeout, meaning the server did not respond in time.`,
+        server: server,
+        query: query,
+        error: error.message,
+        timing: timing,
+      });
+      throw error; // Propagate failure up
     }
-
-    const lookupTime = Date.now() - lookupStart;
-
-    // Add response step
-    this.steps.push({
-      stage: 'recursive_to_client_response',
-      name: 'Recursive Resolver Response',
-      description: lookupError 
-        ? `❌ Failed to resolve ${domain}` 
-        : `✅ Received response from recursive resolver`,
-      server: resolver,
-      messageType: 'RESPONSE',
-      direction: 'response',
-      response: {
-        found: !lookupError,
-        records: result.records,
-        ttl: result.ttl,
-        rcode: lookupError ? 'NXDOMAIN' : 'NOERROR',
-        authoritative: false,
-        recursionAvailable: true,
-        error: lookupError ? lookupError.message : undefined,
-        realResponse: true
-      },
-      timing: lookupTime,
-      explanation: lookupError
-        ? `❌ DNS resolution failed: ${lookupError.message}. The domain may not exist, be misconfigured, or the DNS server may be unreachable.`
-        : `✅ Successfully resolved ${domain} to ${result.records.length} record(s) in ${lookupTime}ms. Response time indicates: ${this.analyzeResponseTime(lookupTime)}`
-    });
-
-    // Add internal steps explanation
-    if (!lookupError) {
-      await this.explainRecursiveProcess(domain, recordType, lookupTime);
-    }
-  }
-
-  async liveIterativeResolution(domain, recordType, settings) {
-    const parts = domain.split('.');
-    const tld = parts[parts.length - 1];
-
-    // Step 1: Query root server
-    const rootStart = Date.now();
-    let rootServers = [];
     
-    try {
-      // Get root servers for the TLD
-      rootServers = await this.queryRootServer(tld);
-      
-      this.steps.push({
-        stage: 'client_to_root_query',
-        name: 'Root Server Query',
-        description: `Querying root server for .${tld} TLD nameservers`,
-        server: { name: 'Root Server', type: 'root', ip: '198.41.0.4' },
-        query: { domain, type: recordType, class: 'IN', recursionDesired: false },
-        messageType: 'QUERY',
-        direction: 'request',
+    const timing = Date.now() - stepStart;
+    const cname = response.answers.find(a => a.type === 'CNAME');
+    const answers = response.answers.filter(a => a.type === recordType.toUpperCase());
+
+    // --- 3. Handle Query SUCCESS ---
+
+    // Case 1: We got the final answer!
+    if (answers.length > 0) {
+      this.addStep({
+        stage: 'authoritative_server',
+        name: `(${queryNumber}) Authoritative Answer`,
+        messageType: 'RESPONSE',
+        explanation: `✅ Success! The authoritative server ${server.name} (${server.ip}) returned the final answer.`,
+        server: server,
+        query: query,
+        response: {
+          found: true,
+          records: response.answers, // Return all answers, including CNAME
+          authoritative: true,
+          packet: response,
+        },
+        timing: timing,
+      });
+      return response.answers;
+    }
+
+    // Case 2: We got a CNAME.
+    if (cname) {
+      this.addStep({
+        stage: 'cname_referral',
+        name: `(${queryNumber}) CNAME Referral`,
+        messageType: 'RESPONSE',
+        explanation: `👉 The server ${server.name} responded with a CNAME record. This means '${domain}' is just an alias for '${cname.data}'. The entire resolution process must restart for the new name.`,
+        server: server,
+        query: query,
+        response: {
+          found: true, // A CNAME is a valid "found" response
+          records: response.answers,
+          cname: cname.data,
+          packet: response,
+        },
+        timing: timing,
+      });
+      // Restart the *entire* process from the root for the new name.
+      const rootServer = ROOT_SERVERS[0];
+      return this.traceIterative(cname.data, recordType, rootServer.ip, rootServer.type);
+    }
+
+    // Case 3: We got a referral (no answer, but NS records in authority).
+    const referrals = response.authorities.filter(a => a.type === 'NS');
+    if (referrals.length > 0) {
+      const nextServerType = (serverType === 'Root') ? 'TLD' : 'Authoritative';
+      const glueRecords = response.additionals.filter(a => (a.type === 'A' || a.type === 'AAAA'));
+
+      this.addStep({
+        stage: `${nextServerType.toLowerCase()}_referral`, // e.g., 'tld_referral'
+        name: `(${queryNumber}) Referral from ${server.type} Server`,
+        messageType: 'RESPONSE',
+        explanation: `The ${server.type} server doesn't have the final answer. Instead, it referred us to the ${nextServerType} nameservers that are responsible for the next part of the domain.`,
+        server: server,
+        query: query,
         response: {
           found: false,
           referral: true,
-          nameservers: rootServers,
-          rcode: 'NOERROR',
-          realResponse: true
+          nameservers: referrals.map(r => r.data),
+          glueRecords: glueRecords.map(g => ({ name: g.name, ip: g.data })),
+          packet: response,
         },
-        timing: Date.now() - rootStart,
-        explanation: `✅ Root server provided referral to .${tld} TLD nameservers: ${rootServers.join(', ')}`
+        timing: timing,
       });
-    } catch (error) {
-      this.steps.push({
-        stage: 'client_to_root_query',
-        name: 'Root Server Query',
-        description: 'Failed to query root server',
-        server: { name: 'Root Server', type: 'root' },
-        messageType: 'QUERY',
-        direction: 'request',
-        timing: Date.now() - rootStart,
-        error: error.message,
-        explanation: `❌ Could not query root server: ${error.message}`
-      });
-      throw error;
-    }
 
-    // Step 2: Query TLD server
-    const tldStart = Date.now();
-    let authServers = [];
-    
-    try {
-      authServers = await this.queryTLDServer(domain);
-      
-      this.steps.push({
-        stage: 'client_to_tld_query',
-        name: 'TLD Server Query',
-        description: `Querying .${tld} TLD server for authoritative nameservers`,
-        server: { name: `${tld} TLD Server`, type: 'tld' },
-        query: { domain, type: recordType, class: 'IN', recursionDesired: false },
-        messageType: 'QUERY',
-        direction: 'request',
-        response: {
-          found: false,
-          referral: true,
-          nameservers: authServers,
-          rcode: 'NOERROR',
-          realResponse: true
-        },
-        timing: Date.now() - tldStart,
-        explanation: `✅ TLD server provided referral to authoritative nameservers: ${authServers.join(', ')}`
-      });
-    } catch (error) {
-      this.steps.push({
-        stage: 'client_to_tld_query',
-        name: 'TLD Server Query',
-        description: 'Failed to query TLD server',
-        server: { name: `${tld} TLD Server`, type: 'tld' },
-        messageType: 'QUERY',
-        direction: 'request',
-        timing: Date.now() - tldStart,
-        error: error.message,
-        explanation: `❌ Could not query TLD server: ${error.message}`
-      });
-      throw error;
-    }
+      // Find the IP for the *next* server to query.
+      let nextServerIp = null;
+      let nextServerName = null;
 
-    // Step 3: Query authoritative server
-    const authStart = Date.now();
-    let result;
-    let authError = null;
-
-    try {
-      result = await this.performDNSLookup(domain, recordType);
-    } catch (error) {
-      authError = error;
-      result = { records: [], ttl: 0 };
-    }
-
-    this.steps.push({
-      stage: 'client_to_auth_query',
-      name: 'Authoritative Server Query',
-      description: authError 
-        ? `❌ Failed to resolve ${domain}` 
-        : `✅ Received final answer from authoritative server`,
-      server: { name: authServers[0] || 'Authoritative Server', type: 'authoritative' },
-      query: { domain, type: recordType, class: 'IN', recursionDesired: false },
-      messageType: authError ? 'QUERY' : 'RESPONSE',
-      direction: authError ? 'request' : 'response',
-      response: {
-        found: !authError,
-        records: result.records,
-        ttl: result.ttl,
-        rcode: authError ? 'NXDOMAIN' : 'NOERROR',
-        authoritative: true,
-        recursionAvailable: false,
-        error: authError ? authError.message : undefined,
-        realResponse: true
-      },
-      timing: Date.now() - authStart,
-      explanation: authError
-        ? `❌ Authoritative server could not resolve ${domain}: ${authError.message}`
-        : `✅ Resolution complete! Authoritative server returned ${result.records.length} record(s) in ${Date.now() - authStart}ms.`
-    });
-
-    if (authError) {
-      throw authError;
-    }
-  }
-
-  async performDNSLookup(domain, recordType) {
-    try {
-      let records = [];
-      let ttl = 300;
-
-      switch (recordType) {
-        case 'A':
-          const addresses = await dns.resolve4(domain, { ttl: true });
-          records = addresses.map(item => ({
-            type: 'A',
-            address: item.address,
-            ttl: item.ttl
-          }));
-          ttl = addresses[0]?.ttl || 300;
+      for (const ns of referrals) {
+        nextServerName = ns.data;
+        const glue = glueRecords.find(a => a.name === nextServerName && a.type === 'A'); // Prefer A records for simplicity
+        if (glue) {
+          nextServerIp = glue.data;
+          this.cache.set(nextServerName, nextServerIp); // Cache it
           break;
-        case 'AAAA':
-          const addresses6 = await dns.resolve6(domain, { ttl: true });
-          records = addresses6.map(item => ({
-            type: 'AAAA',
-            address: item.address,
-            ttl: item.ttl
-          }));
-          ttl = addresses6[0]?.ttl || 300;
-          break;
-        case 'CNAME':
-          const cnames = await dns.resolveCname(domain);
-          records = cnames.map(cname => ({ type: 'CNAME', value: cname }));
-          break;
-        case 'MX':
-          const mxRecords = await dns.resolveMx(domain);
-          records = mxRecords.map(mx => ({
-            type: 'MX',
-            priority: mx.priority,
-            exchange: mx.exchange
-          }));
-          break;
-        case 'NS':
-          const nsRecords = await dns.resolveNs(domain);
-          records = nsRecords.map(ns => ({ type: 'NS', nameserver: ns }));
-          break;
-        case 'TXT':
-          const txtRecords = await dns.resolveTxt(domain);
-          records = txtRecords.map(txt => ({ type: 'TXT', data: txt.join('') }));
-          break;
-        case 'SOA':
-          const soaRecord = await dns.resolveSoa(domain);
-          records = [{
-            type: 'SOA',
-            nsname: soaRecord.nsname,
-            hostmaster: soaRecord.hostmaster,
-            serial: soaRecord.serial,
-            refresh: soaRecord.refresh,
-            retry: soaRecord.retry,
-            expire: soaRecord.expire,
-            minttl: soaRecord.minttl
-          }];
-          break;
-        default:
-          const defaultAddrs = await dns.resolve4(domain, { ttl: true });
-          records = defaultAddrs.map(item => ({
-            type: 'A',
-            address: item.address,
-            ttl: item.ttl
-          }));
-          ttl = defaultAddrs[0]?.ttl || 300;
+        }
       }
 
-      return { records, ttl };
-    } catch (error) {
-      throw error;
+      // If no glue record was provided, we must resolve it ourselves.
+      if (!nextServerIp) {
+        nextServerName = referrals[0].data; // Just pick the first one
+        
+        if (this.cache.has(nextServerName)) {
+          nextServerIp = this.cache.get(nextServerName);
+        } else {
+          // --- Glue Record Sub-query ---
+          this.addStep({
+            stage: 'glue_resolve_start',
+            name: `Glue Lookup Started`,
+            explanation: `ℹ️ The server referred us to '${nextServerName}' but did not provide its IP address (a "glue record"). We must perform a *new* full DNS query (starting from the root) just to find the IP of this nameserver.`,
+            timing: 0,
+          });
+          
+          try {
+            const rootServer = ROOT_SERVERS[0];
+            // This is a recursive call, but it's for the *nameserver*, not the original domain.
+            const glueAnswers = await this.traceIterative(nextServerName, 'A', rootServer.ip, rootServer.type);
+            
+            if (!glueAnswers || glueAnswers.length === 0) {
+              throw new Error(`No 'A' records found for nameserver '${nextServerName}'`);
+            }
+            
+            nextServerIp = glueAnswers.find(a => a.type === 'A')?.data;
+            if (!nextServerIp) {
+              throw new Error(`Glue resolution for '${nextServerName}' returned answers, but none were 'A' records.`);
+            }
+
+            this.cache.set(nextServerName, nextServerIp); // Cache it
+            this.addStep({
+              stage: 'glue_resolve_success',
+              name: `Glue Lookup Success`,
+              explanation: `✅ Glue lookup for '${nextServerName}' succeeded. Its IP is ${nextServerIp}. Now we can resume the original query.`,
+              response: { records: glueAnswers },
+              timing: 0, // Timing is captured by the steps within the sub-query
+            });
+
+          } catch (error) {
+            // --- THIS IS THE LIKELY FAILURE POINT ---
+            this.addStep({
+              stage: 'error',
+              name: `Glue Lookup Failed`,
+              explanation: `❌ CRITICAL FAILURE: The query for the *nameserver* '${nextServerName}' failed. We cannot proceed with the original query for '${domain}' because we don't know the IP of the next server.`,
+              error: error.message,
+              timing: 0,
+            });
+            throw error; // Propagate failure up
+          }
+        }
+      }
+
+      // Now we have the IP of the next server. Recurse.
+      return this.traceIterative(domain, recordType, nextServerIp, nextServerType);
     }
-  }
-
-  async queryRootServer(tld) {
-    try {
-      // Query for TLD nameservers
-      const nsRecords = await dns.resolveNs(tld);
-      return nsRecords;
-    } catch (error) {
-      // Return common TLD servers as fallback
-      return [`${tld}-servers.net`];
+    
+    // Case 4: SOA record (NXDOMAIN or NOERROR with 0 answers)
+    const soa = response.authorities.find(a => a.type === 'SOA');
+    if (soa) {
+         const code = response.flags.rcode;
+         this.addStep({
+            stage: 'authoritative_server',
+            name: `(${queryNumber}) Authoritative Response (${code})`,
+            messageType: 'RESPONSE',
+            explanation: code === 'NXDOMAIN'
+              ? `❌ The authoritative server ${server.name} responded with NXDOMAIN (Non-Existent Domain). This domain does not exist.`
+              : `✅ The authoritative server ${server.name} responded with NOERROR, but no ${recordType} records were found for this domain.`,
+            server: server,
+            query: query,
+            response: {
+              found: false,
+              records: [],
+              rcode: code,
+              packet: response,
+            },
+            timing: timing,
+         });
+         
+         if (code === 'NXDOMAIN') {
+            throw new Error(`Domain not found (NXDOMAIN) by ${server.name}`);
+         }
+         return []; // Return empty array for NOERROR, 0 answers
     }
-  }
 
-  async queryTLDServer(domain) {
-    try {
-      // Query for authoritative nameservers
-      const nsRecords = await dns.resolveNs(domain);
-      return nsRecords;
-    } catch (error) {
-      // Return generic nameserver as fallback
-      const parts = domain.split('.');
-      return [`ns1.${parts.slice(-2).join('.')}`];
-    }
-  }
-
-  async explainRecursiveProcess(domain, recordType, totalTime) {
-    const parts = domain.split('.');
-    const tld = parts[parts.length - 1];
-
-    // Add explanation steps for what happened internally
-    const internalStart = Date.now();
-
-    this.steps.push({
-      stage: 'recursive_to_root_query',
-      name: 'Internal: Root Server Query',
-      description: 'Recursive resolver queried root server (internal step)',
-      server: { name: 'Root Server', type: 'root', ip: '198.41.0.4' },
-      query: { domain, type: recordType, class: 'IN' },
-      messageType: 'QUERY',
-      direction: 'request',
-      response: {
-        found: false,
-        referral: true,
-        nameservers: [`${tld}-servers.net`]
-      },
-      timing: Math.floor(totalTime * 0.2),
-      explanation: `🔍 The recursive resolver first queried a root server, which referred it to the .${tld} TLD nameservers.`
+    // Fallback error
+    const unknownError = new Error(`Unknown DNS response from ${server.ip}`);
+    this.addStep({
+      stage: 'error',
+      name: `(${queryNumber}) Unknown Response`,
+      explanation: `The server ${server.name} returned a response that the tracer could not understand (no answer, no referral, no SOA).`,
+      server: server,
+      query: query,
+      error: unknownError.message,
+      response: { packet: response },
+      timing: timing,
     });
+    throw unknownError;
+  }
 
-    this.steps.push({
-      stage: 'recursive_to_tld_query',
-      name: 'Internal: TLD Server Query',
-      description: `Recursive resolver queried .${tld} TLD server (internal step)`,
-      server: { name: `${tld} TLD Server`, type: 'tld' },
-      query: { domain, type: recordType, class: 'IN' },
+  /**
+   * Performs a simple recursive query.
+   */
+  async traceRecursive(domain, recordType, resolverIp) {
+    const stepStart = Date.now();
+    const server = this.getServerInfo(resolverIp, 'Recursive');
+    const query = { domain, type: recordType, class: 'IN', recursionDesired: true };
+    const queryNumber = this.queryId++;
+
+    // --- 1. Add QUERY Step ---
+    this.addStep({
+      stage: 'recursive_query',
+      name: `(${queryNumber}) Querying Recursive Resolver`,
       messageType: 'QUERY',
-      direction: 'request',
-      response: {
-        found: false,
-        referral: true,
-        nameservers: [`ns1.${parts.slice(-2).join('.')}`]
-      },
-      timing: Math.floor(totalTime * 0.3),
-      explanation: `🔍 The TLD server referred the resolver to the authoritative nameservers for ${parts.slice(-2).join('.')}.`
+      explanation: `The client is sending a *recursive* query to ${server.name} (${server.ip}). This resolver will now perform the full iterative process (querying root, TLD, etc.) on our behalf and return only the final answer.`,
+      server: server,
+      query: query,
+      timing: 0, // Will be updated by response step
     });
+    
+    let response;
+    try {
+      // --- 2. Send the Query ---
+      response = await this.sendQuery(domain, recordType, serverIp, true);
+    } catch (error) {
+      // --- 2b. Handle Query FAILURE (e.g., Timeout) ---
+      const timing = Date.now() - stepStart;
+      this.addStep({
+        stage: 'error',
+        name: `(${queryNumber}) Query Failed`,
+        messageType: 'RESPONSE',
+        explanation: `The query sent to the recursive resolver ${server.name} (${server.ip}) failed. This is most likely due to a network timeout.`,
+        server: server,
+        query: query,
+        error: error.message,
+        timing: timing,
+      });
+      throw error; // Propagate failure up
+    }
+    
+    const timing = Date.now() - stepStart;
+    const answers = response.answers;
 
-    this.steps.push({
-      stage: 'recursive_to_auth_query',
-      name: 'Internal: Authoritative Server Query',
-      description: 'Recursive resolver queried authoritative server (internal step)',
-      server: { name: `ns1.${parts.slice(-2).join('.')}`, type: 'authoritative' },
-      query: { domain, type: recordType, class: 'IN' },
+    // --- 3. Handle Query SUCCESS ---
+    if (answers.length > 0) {
+      this.addStep({
+        stage: 'recursive_answer',
+        name: `(${queryNumber}) Recursive Answer Received`,
+        messageType: 'RESPONSE',
+        explanation: `✅ Success! The recursive resolver ${server.name} completed its process and returned the final answer(s).`,
+        server: server,
+        query: query,
+        response: {
+          found: true,
+          records: answers,
+          authoritative: response.flags.aa,
+          packet: response,
+        },
+        timing: timing,
+      });
+      return answers;
+    }
+
+    // Handle NXDOMAIN or NOERROR with 0 answers
+    const code = response.flags.rcode;
+    this.addStep({
+      stage: 'recursive_answer',
+      name: `(${queryNumber}) Recursive Response (${code})`,
       messageType: 'RESPONSE',
-      direction: 'response',
-      timing: Math.floor(totalTime * 0.5),
-      explanation: `🔍 The authoritative nameserver provided the final answer, which the recursive resolver cached and returned to us.`
+      explanation: code === 'NXDOMAIN'
+        ? `❌ The recursive resolver ${server.name} responded with NXDOMAIN (Non-Existent Domain).`
+        : `✅ The recursive resolver ${server.name} responded with NOERROR, but no ${recordType} records were found.`,
+      server: server,
+      query: query,
+      response: {
+        found: false,
+        records: [],
+        rcode: code,
+        packet: response,
+      },
+      timing: timing,
+    });
+    
+    if (code === 'NXDOMAIN') {
+      throw new Error(`Domain not found (NXDOMAIN) by ${server.name}`);
+    }
+    return [];
+  }
+
+  /**
+   * Core UDP query function.
+   */
+  sendQuery(name, type, serverIp, recursionDesired = false, timeout = 5000) {
+    return new Promise((resolve, reject) => {
+      const socket = dgram.createSocket('udp4');
+      const queryType = type.toUpperCase();
+      const buf = dnsPacket.encode({
+        type: 'query',
+        id: Math.floor(Math.random() * 65535),
+        flags: recursionDesired ? dnsPacket.RECURSION_DESIRED : 0,
+        questions: [{
+          type: queryType,
+          class: 'IN',
+          name: name
+        }]
+      });
+
+      const timer = setTimeout(() => {
+        socket.close();
+        reject(new Error(`DNS query for ${name} (${queryType}) @ ${serverIp} timed out after ${timeout}ms`));
+      }, timeout);
+
+      socket.on('error', (err) => {
+        clearTimeout(timer);
+        socket.close();
+        reject(new Error(`Socket error: ${err.message}`));
+      });
+
+      socket.on('message', (msg) => {
+        clearTimeout(timer);
+        socket.close();
+        try {
+          const decoded = dnsPacket.decode(msg);
+          const normalize = (r) => ({
+             ...r,
+             type: RECORD_TYPES_REV[r.type] || r.type,
+          });
+          decoded.answers = decoded.answers.map(normalize);
+          decoded.authorities = decoded.authorities.map(normalize);
+          decoded.additionals = decoded.additionals.map(normalize);
+          resolve(decoded);
+        } catch (err) {
+          reject(new Error(`Failed to decode DNS packet: ${err.message}`));
+        }
+      });
+
+      socket.send(buf, 0, buf.length, 53, serverIp);
     });
   }
 
-  analyzeResponseTime(ms) {
-    if (ms < 10) {
-      return '⚡ Extremely fast - likely from cache';
-    } else if (ms < 50) {
-      return '🚀 Very fast - good network conditions';
-    } else if (ms < 100) {
-      return '✅ Normal response time';
-    } else if (ms < 300) {
-      return '⏱️ Slightly slow - acceptable';
-    } else {
-      return '🐌 Slow response - network latency or distant server';
-    }
+  /**
+   * Helper function to add a step to the log.
+   */
+  addStep(data) {
+    this.steps.push({
+      // Provide defaults
+      name: 'Unknown Step',
+      stage: 'unknown',
+      messageType: 'INFO',
+      explanation: '',
+      ...data,
+    });
   }
 }
 
-module.exports = new LiveDNSResolver();
-
-
+// Export the class
+module.exports = LiveDNSTracer;

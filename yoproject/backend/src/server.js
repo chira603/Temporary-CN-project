@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dnsResolver = require('./dnsResolver');
-const liveDNSResolver = require('./liveDNSResolver');
+const LiveDNSTracer = require('./liveDNSTracer'); // Real DNS using dig +trace
 const attackSimulator = require('./attackSimulator');
 
 const app = express();
@@ -19,13 +19,60 @@ app.post('/api/resolve', async (req, res) => {
       return res.status(400).json({ error: 'Domain name is required' });
     }
 
-    // Determine which resolver to use based on queryMode
     const queryMode = config?.queryMode || 'deterministic';
-    const resolver = queryMode === 'live' ? liveDNSResolver : dnsResolver;
+    let result;
 
-    console.log(`[${queryMode.toUpperCase()} MODE] Resolving ${domain} (${recordType || 'A'}) in ${mode || 'recursive'} mode`);
+    if (queryMode === 'live') {
+      // --- LIVE MODE: Use dig +trace for 100% real DNS data ---
+      console.log(`[LIVE MODE] Tracing ${domain} (${recordType || 'A'}) using dig +trace`);
+      
+      const tracer = new LiveDNSTracer();
+      const traceResult = await tracer.getTrace(domain, recordType || 'A');
+      
+      if (!traceResult.success) {
+        return res.status(500).json({
+          success: false,
+          error: traceResult.error,
+          domain,
+          recordType: recordType || 'A',
+          mode: 'live'
+        });
+      }
+      
+      // Convert to our standard format
+      result = {
+        success: true,
+        domain,
+        recordType: recordType || 'A',
+        mode: 'live',
+        steps: traceResult.visualStages, // Use visualization stages
+        totalTime: traceResult.totalTime,
+        config: {
+          queryMode: 'live',
+          isLive: true,
+          totalStages: traceResult.totalStages
+        },
+        liveData: {
+          rawStages: traceResult.stages, // Include raw parsed stages with attempts
+          structuredExport: traceResult.structuredExport, // JSON export schema
+          rawOutput: traceResult.rawOutput, // Include raw dig output for verification
+          errors: traceResult.errors, // Include parsed errors and warnings
+          timestamp: traceResult.timestamp
+        }
+      };
+      
+    } else {
+      // --- DETERMINISTIC MODE: Educational simulation with configurable parameters ---
+      console.log(`[DETERMINISTIC MODE] Simulating ${domain} (${recordType || 'A'}) resolution`);
+      
+      result = await dnsResolver.resolve(
+        domain, 
+        recordType || 'A', 
+        mode || 'recursive', 
+        config || {}
+      );
+    }
 
-    const result = await resolver.resolve(domain, recordType || 'A', mode || 'recursive', config || {});
     res.json(result);
   } catch (error) {
     console.error('DNS Resolution error:', error);
@@ -33,7 +80,7 @@ app.post('/api/resolve', async (req, res) => {
   }
 });
 
-// DNS Attack Simulation endpoint
+// DNS Attack Simulation endpoint (No changes needed)
 app.post('/api/simulate-attack', async (req, res) => {
   try {
     const { attackType, domain, config } = req.body;
@@ -59,7 +106,7 @@ app.post('/api/simulate-attack', async (req, res) => {
   }
 });
 
-// Get available attack types
+// Get available attack types (No changes needed)
 app.get('/api/attack-types', (req, res) => {
   res.json({
     attacks: [
@@ -109,7 +156,7 @@ app.get('/api/attack-types', (req, res) => {
   });
 });
 
-// Health check endpoint
+// Health check endpoint (No changes needed)
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -118,5 +165,3 @@ app.listen(PORT, () => {
   console.log(`DNS Simulation Server running on port ${PORT}`);
   console.log(`Attack simulation endpoints available at /api/simulate-attack`);
 });
-
-
