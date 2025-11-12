@@ -1,15 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import QueryInput from './components/QueryInput';
-import ConfigPanel from './components/ConfigPanel';
-import VisualizationPanel from './components/VisualizationPanel';
-import ResultsPanel from './components/ResultsPanel';
-import DNSSECChainVisualization from './components/DNSSECChainVisualization';
-import TutorialWizard from './components/TutorialWizard';
-import DNSGlossary from './components/DNSGlossary';
-import AttackScenariosPanel from './components/AttackScenariosPanel';
-import SecurityProtocolsPanel from './components/SecurityProtocolsPanel';
-import { resolveDNS } from './services/api';
-import './styles/App.css';
+// FIX: Changed all import paths to be absolute from /src/
+import QueryInput from '/src/components/QueryInput';
+import ConfigPanel from '/src/components/ConfigPanel';
+import VisualizationPanel from '/src/components/VisualizationPanel';
+import ResultsPanel from '/src/components/ResultsPanel';
+import DNSSECChainVisualization from '/src/components/DNSSECChainVisualization';
+import TutorialWizard from '/src/components/TutorialWizard';
+import DNSGlossary from '/src/components/DNSGlossary';
+import AttackScenariosPanel from '/src/components/AttackScenariosPanel';
+import DNSModeComparison from '/src/components/DNSModeComparison';
+import DNSSecurityPanel from '/src/components/DNSSecurityPanel';
+import PacketLossVisualization from '/src/components/PacketLossVisualization';
+import ErrorBoundary from '/src/components/ErrorBoundary';
+import { resolveDNS } from '/src/services/api';
+import '/src/styles/App.css';
 
 function App() {
   const [loading, setLoading] = useState(false);
@@ -30,7 +34,8 @@ function App() {
     dnssecEnabled: false,
     simulateDNSSECFailure: false,
     customDNS: null,
-    simulateFailures: false
+    simulateFailures: false,
+    useRealDelegation: false // Use real DNS delegation data
   });
 
   // Check if tutorial should be shown (first time users)
@@ -52,8 +57,12 @@ function App() {
 
     try {
       const data = await resolveDNS(domain, config.recordType, config.mode, config);
-      setResults(data);
+      // Attach the config used for this query to the results object
+      // This makes it easier for child components to read
+      const resultsWithConfig = { ...data, config: config };
+      setResults(resultsWithConfig);
     } catch (err) {
+      console.error('DNS Resolution Error:', err);
       setError(err.message || 'Failed to resolve DNS query');
     } finally {
       setLoading(false);
@@ -124,65 +133,70 @@ function App() {
         </div>
 
         <div className="main-panel">
-          {error && (
-            <div className="error-message">
-              <h3>❌ Error</h3>
-              <p>{error}</p>
-            </div>
-          )}
+          <ErrorBoundary>
+            {error && (
+              <div className="error-message">
+                <h3>❌ Error</h3>
+                <p>{error}</p>
+              </div>
+            )}
 
-          {loading && (
-            <div className="loading-message">
-              <div className="spinner"></div>
-              <p>Resolving DNS query...</p>
-            </div>
-          )}
+            {loading && (
+              <div className="loading-message">
+                <div className="spinner"></div>
+                <p>Resolving DNS query...</p>
+              </div>
+            )}
 
-          {results && !loading && (
-            <>
-              <VisualizationPanel results={results} />
-              {config.dnssecEnabled && results.steps && results.steps.some(s => s.dnssec) && (
-                <DNSSECChainVisualization
-                  dnssecSteps={results.steps.filter(s => s.dnssec)}
-                />
-              )}
-              <ResultsPanel results={results} />
-            </>
-          )}
+            {results && !loading && (
+              <>
+                {/* FIX: Pass the 'config' object from state to both components */}
+                <VisualizationPanel results={results} config={config} />
+                
+                {config.dnssecEnabled && results.steps && results.steps.some(s => s.dnssec) && (
+                  <DNSSECChainVisualization
+                    dnssecSteps={results.steps.filter(s => s.dnssec)}
+                  />
+                )}
+                
+                <ResultsPanel results={results} config={config} />
+              </>
+            )}
 
-          {!results && !loading && !error && (
-            <div className="welcome-message">
-              <h2>Welcome to DNS Resolution Simulator</h2>
-              <p>Enter a domain name above to start visualizing the DNS resolution process</p>
-              <div className="features">
-                <div className="feature">
-                  <span className="icon">🔄</span>
-                  <h3>Recursive & Iterative</h3>
-                  <p>Simulate both resolution modes</p>
+            {!results && !loading && !error && (
+              <div className="welcome-message">
+                <h2>Welcome to DNS Resolution Simulator</h2>
+                <p>Enter a domain name above to start visualizing the DNS resolution process</p>
+                <div className="features">
+                  <div className="feature">
+                    <span className="icon">🔄</span>
+                    <h3>Recursive & Iterative</h3>
+                    <p>Simulate both resolution modes</p>
+                  </div>
+                  <div className="feature">
+                    <span className="icon">📊</span>
+                    <h3>Visual Flow</h3>
+                    <p>Animated packet flow diagrams</p>
+                  </div>
+                  <div className="feature">
+                    <span className="icon">🔒</span>
+                    <h3>DNSSEC Support</h3>
+                    <p>Security validation steps</p>
+                  </div>
+                  <div className="feature">
+                    <span className="icon">⚙️</span>
+                    <h3>Configurable</h3>
+                    <p>Adjust cache, latency, and more</p>
+                  </div>
                 </div>
-                <div className="feature">
-                  <span className="icon">📊</span>
-                  <h3>Visual Flow</h3>
-                  <p>Animated packet flow diagrams</p>
-                </div>
-                <div className="feature">
-                  <span className="icon">🔒</span>
-                  <h3>DNSSEC Support</h3>
-                  <p>Security validation steps</p>
-                </div>
-                <div className="feature">
-                  <span className="icon">⚙️</span>
-                  <h3>Configurable</h3>
-                  <p>Adjust cache, latency, and more</p>
+                
+                <div className="quick-start-tip">
+                  <span className="tip-icon">💡</span>
+                  <p>New to DNS? <button className="inline-link" onClick={() => setShowTutorial(true)}>Start the interactive tutorial</button> to learn the basics!</p>
                 </div>
               </div>
-              
-              <div className="quick-start-tip">
-                <span className="tip-icon">💡</span>
-                <p>New to DNS? <button className="inline-link" onClick={() => setShowTutorial(true)}>Start the interactive tutorial</button> to learn the basics!</p>
-              </div>
-            </div>
-          )}
+            )}
+          </ErrorBoundary>
         </div>
       </div>
 
@@ -219,4 +233,3 @@ function App() {
 }
 
 export default App;
-

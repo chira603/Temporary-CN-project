@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as d3 from 'd3';
 import '../styles/VisualizationPanel.css';
+import DynamicVisualization from './DynamicVisualization';
 
 // Export this hook so other components can use it
 export const useIsLiveMode = (results) => {
@@ -1263,41 +1264,9 @@ function VisualizationPanel({ results }) {
     });
   };
 
-  const handlePlayPause = () => {
-    setIsPlaying(!isPlaying);
-  };
+  // Play/Pause handled by top-level simulation control; local button removed.
 
-  const handleReset = () => {
-    setCurrentStep(0);
-    setIsPlaying(false);
-  };
-
-  const handleStepForward = () => {
-    if (currentStep < results.steps.length - 1) {
-      setCurrentStep(prev => prev + 1);
-    }
-  };
-
-  const handleStepBackward = () => {
-    if (currentStep > 0) {
-      setCurrentStep(prev => prev - 1);
-    }
-  };
-
-  const handleJumpToFirst = () => {
-    setCurrentStep(0);
-    setIsPlaying(false);
-  };
-
-  const handleJumpToLast = () => {
-    setCurrentStep(results.steps.length - 1);
-    setIsPlaying(false);
-  };
-
-  const handleScrubberChange = (e) => {
-    setCurrentStep(parseInt(e.target.value));
-    setIsPlaying(false);
-  };
+  // Removed navigation handlers (first/back/forward/last/scrubber) per UI simplification request.
 
   useEffect(() => {
     if (isLiveMode && viewMode !== 'network') {
@@ -1489,176 +1458,22 @@ function VisualizationPanel({ results }) {
       )}
 
       <div className="visualization-container" ref={containerRef}>
-        <svg ref={svgRef} className="visualization-svg"></svg>
+        <DynamicVisualization 
+          results={results} 
+          isLiveMode={isLiveMode} 
+          currentStep={currentStep}
+        />
         <div ref={tooltipRef} className="d3-tooltip"></div>
       </div>
 
       <div className="controls">
-        {!isLiveMode && (
-          <>
-            <button onClick={handleJumpToFirst} className="control-button" title="Jump to First (Home)">
-              ⏪ First
-            </button>
-            <button onClick={handleStepBackward} disabled={currentStep === 0} className="control-button" title="Previous Step (←)">
-              ◀ Back
-            </button>
-            <button onClick={handlePlayPause} className="control-button" title="Play/Pause (Space)">
-              {isPlaying ? '⏸ Pause' : '▶ Play'}
-            </button>
-            <button onClick={handleStepForward} disabled={currentStep >= results.steps.length - 1} className="control-button" title="Next Step (→)">
-              Forward ▶
-            </button>
-            <button onClick={handleJumpToLast} className="control-button" title="Jump to Last (End)">
-              Last ⏩
-            </button>
-          </>
-        )}
+        {/* Local Play/Pause button removed; top-level control exists. */}
         {isLiveMode && (
           <span className="live-indicator">🔴 Live Mode</span>
         )}
-        {!isLiveMode && (
-          <span className="step-counter">
-            Step {displayStepIndex + 1} of {results.steps.length}
-          </span>
-        )}
       </div>
 
-      {!isLiveMode && (
-        <div className="scrubber-container">
-          <input
-            type="range"
-            min="0"
-            max={results.steps.length - 1}
-            value={currentStep}
-            onChange={handleScrubberChange}
-            className="step-scrubber"
-          />
-          <div className="scrubber-labels">
-            <span>Start</span>
-            <span>Step {currentStep + 1}</span>
-            <span>End</span>
-          </div>
-        </div>
-      )}
-
-      {!isLiveMode && currentStepData && detailedExplanation && (
-        <div className="current-step-info">
-          <h3>{currentStepData.name}</h3>
-          
-          <div className="explanation-section">
-            <div className="explanation-header">
-              <h4>📖 Overview</h4>
-            </div>
-            <p className="explanation-text">{detailedExplanation.overview}</p>
-          </div>
-
-          <div className="explanation-section">
-            <div className="explanation-header">
-              <h4>🔍 What Happened</h4>
-            </div>
-            <p className="explanation-text">{detailedExplanation.whatHappened}</p>
-          </div>
-
-          {detailedExplanation.technical && (
-            <div className="explanation-section technical-section">
-              <div className="explanation-header">
-                <h4>⚙️ Technical Details</h4>
-              </div>
-              <pre className="explanation-text technical">{detailedExplanation.technical}</pre>
-            </div>
-          )}
-
-          {detailedExplanation.whyItMatters && (
-            <div className="explanation-section">
-              <div className="explanation-header">
-                <h4>💡 Why It Matters</h4>
-              </div>
-              <p className="explanation-text">{detailedExplanation.whyItMatters}</p>
-            </div>
-          )}
-
-          {detailedExplanation.possibleIssues && detailedExplanation.possibleIssues.length > 0 && (
-            <div className="explanation-section issues-section">
-              <div className="explanation-header">
-                <h4>⚠️ Issues & Analysis</h4>
-              </div>
-              {detailedExplanation.possibleIssues.map((issue, idx) => (
-                <div key={idx} className="issue-card">
-                  <h5 className="issue-title">{issue.issue}</h5>
-                  <p className="issue-description">{issue.description}</p>
-                  {issue.impact && (
-                    <p className="issue-detail">
-                      <strong>Impact:</strong> {issue.impact}
-                    </p>
-                  )}
-                  {issue.cause && (
-                    <p className="issue-detail">
-                      <strong>Cause:</strong> {issue.cause}
-                    </p>
-                  )}
-                  {issue.solution && (
-                    <p className="issue-detail solution">
-                      <strong>Solution:</strong> {issue.solution}
-                    </p>
-                  )}
-                  {issue.security && (
-                    <p className="issue-detail security">
-                      <strong>🔒 Security:</strong> {issue.security}
-                    </p>
-                  )}
-                  {issue.simulation && (
-                    <p className="issue-detail simulation">
-                      <strong>🎯 Simulation:</strong> {issue.simulation}
-                    </p>
-                  )}
-                  {issue.realWorld && (
-                    <p className="issue-detail real-world">
-                      <strong>🌍 Real World:</strong> {issue.realWorld}
-                    </p>
-                  )}
-                  {issue.learning && (
-                    <p className="issue-detail learning">
-                      <strong>📚 Learning:</strong> {issue.learning}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {detailedExplanation.performanceNotes && (
-            <div className="explanation-section performance-section">
-              <div className="explanation-header">
-                <h4>⚡ Performance</h4>
-              </div>
-              <p className="explanation-text">{detailedExplanation.performanceNotes}</p>
-            </div>
-          )}
-
-          {detailedExplanation.nextSteps && (
-            <div className="explanation-section next-steps-section">
-              <div className="explanation-header">
-                <h4>➡️ Next Steps</h4>
-              </div>
-              <p className="explanation-text">{detailedExplanation.nextSteps}</p>
-            </div>
-          )}
-
-          <div className="step-details">
-            <div className="detail-box">
-              <strong>Stage:</strong> {currentStepData.stage}
-            </div>
-            <div className="detail-box">
-              <strong>Timing:</strong> {currentStepData.timing}ms
-            </div>
-            {currentStepData.server && (
-              <div className="detail-box">
-                <strong>Server:</strong> {currentStepData.server.name || currentStepData.server}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Removed step counter, scrubber, and detailed per-step explanation panel per request. */}
 
       {selectedNode && (
         <div className="node-detail-modal" onClick={() => setSelectedNode(null)}>

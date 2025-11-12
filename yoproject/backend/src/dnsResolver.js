@@ -2,6 +2,8 @@ const dns = require('dns').promises;
 const dnsPacket = require('dns-packet');
 const NodeCache = require('node-cache');
 const dgram = require('dgram');
+const { parseDomain, getServerTypeForDomain } = require('./domainParser');
+const realDNS = require('./realDNSQuery');
 
 // Simulated cache with TTL
 const browserCache = new NodeCache({ stdTTL: 300 });
@@ -37,12 +39,14 @@ class DNSResolver {
     this.steps = [];
     this.totalTime = 0;
     this.retryAttempts = {};
+    this.finalCachedResult = null; // Holds cached result for early success
   }
 
   async resolve(domain, recordType = 'A', mode = 'recursive', config = {}) {
     this.steps = [];
     this.totalTime = 0;
     this.retryAttempts = {};
+    this.finalCachedResult = null;
     const startTime = Date.now();
 
     const settings = {
@@ -53,7 +57,9 @@ class DNSResolver {
       maxRetries: config.maxRetries || 3,
       dnssecEnabled: config.dnssecEnabled || false,
       customDNS: config.customDNS || null,
-      simulateFailures: config.simulateFailures || false
+      simulateFailures: config.simulateFailures || false,
+      queryMode: config.queryMode || 'deterministic',
+      useRealDNS: config.queryMode === 'real-simulation' || config.useRealDelegation // Use real DNS delegation data
     };
 
     try {
@@ -83,6 +89,22 @@ class DNSResolver {
       };
     } catch (error) {
       this.totalTime = Date.now() - startTime;
+      // Special handling: browser/OS cache hit is a SUCCESS, not a failure
+      if (error.message === 'CACHE_HIT' && this.finalCachedResult) {
+        return {
+          success: true,
+          domain,
+          recordType,
+          mode,
+          steps: this.steps,
+          totalTime: this.totalTime,
+          config: settings,
+          cached: true,
+          records: this.finalCachedResult.records,
+          ttl: this.finalCachedResult.ttl,
+          cacheSource: this.finalCachedResult.source
+        };
+      }
       return {
         success: false,
         domain,
@@ -103,11 +125,30 @@ class DNSResolver {
     const cacheKey = `${domain}:${recordType}`;
     const cached = settings.cacheEnabled ? browserCache.get(cacheKey) : null;
 
+    // Query step
     this.steps.push({
-      stage: 'browser_cache',
-      name: 'Browser Cache Lookup',
-      description: 'Checking if the DNS record exists in the browser\'s local cache',
+      stage: 'browser_cache_query',
+      name: 'Browser Cache Query',
+      description: 'Querying the browser\'s local cache for DNS record',
       server: { name: 'Browser Cache', type: 'cache' },
+      messageType: 'QUERY',
+      query: {
+        domain,
+        type: recordType,
+        class: 'IN'
+      },
+      timing: Date.now() - stepStart,
+      packet: this.generatePacket(domain, recordType, null),
+      explanation: 'Checking browser cache for cached DNS record.'
+    });
+
+    // Response step
+    this.steps.push({
+      stage: 'browser_cache_response',
+      name: cached ? 'Browser Cache Hit' : 'Browser Cache Miss',
+      description: cached ? 'DNS record found in browser cache' : 'DNS record not found in browser cache',
+      server: { name: 'Browser Cache', type: 'cache' },
+      messageType: 'RESPONSE',
       query: {
         domain,
         type: recordType,
@@ -120,6 +161,7 @@ class DNSResolver {
         cached: true
       } : {
         found: false,
+        cacheMiss: true,
         message: 'Cache miss - record not found in browser cache'
       },
       timing: Date.now() - stepStart,
@@ -130,7 +172,13 @@ class DNSResolver {
     });
 
     if (cached) {
-      throw new Error('CACHE_HIT'); // Stop resolution early
+      // Store final cached result for early success return
+      this.finalCachedResult = {
+        source: 'Browser Cache',
+        records: cached.records,
+        ttl: cached.ttl
+      };
+      throw new Error('CACHE_HIT'); // signal early success
     }
   }
 
@@ -141,11 +189,30 @@ class DNSResolver {
     const cacheKey = `${domain}:${recordType}`;
     const cached = settings.cacheEnabled ? osCache.get(cacheKey) : null;
 
+    // Query step
     this.steps.push({
-      stage: 'os_cache',
-      name: 'Operating System Cache Lookup',
-      description: 'Checking the OS-level DNS cache (resolver cache)',
+      stage: 'os_cache_query',
+      name: 'OS Cache Query',
+      description: 'Querying the OS-level DNS cache (resolver cache)',
       server: { name: 'OS Resolver Cache', type: 'cache' },
+      messageType: 'QUERY',
+      query: {
+        domain,
+        type: recordType,
+        class: 'IN'
+      },
+      timing: Date.now() - stepStart,
+      packet: this.generatePacket(domain, recordType, null),
+      explanation: 'Checking OS cache for cached DNS record.'
+    });
+
+    // Response step
+    this.steps.push({
+      stage: 'os_cache_response',
+      name: cached ? 'OS Cache Hit' : 'OS Cache Miss',
+      description: cached ? 'DNS record found in OS cache' : 'DNS record not found in OS cache',
+      server: { name: 'OS Resolver Cache', type: 'cache' },
+      messageType: 'RESPONSE',
       query: {
         domain,
         type: recordType,
@@ -158,6 +225,7 @@ class DNSResolver {
         cached: true
       } : {
         found: false,
+        cacheMiss: true,
         message: 'Cache miss - record not found in OS cache'
       },
       timing: Date.now() - stepStart,
@@ -168,6 +236,11 @@ class DNSResolver {
     });
 
     if (cached) {
+      this.finalCachedResult = {
+        source: 'OS Resolver Cache',
+        records: cached.records,
+        ttl: cached.ttl
+      };
       throw new Error('CACHE_HIT');
     }
   }
@@ -262,7 +335,10 @@ class DNSResolver {
     await this.simulateLatency(settings.networkLatency);
 
     // Query recursive resolver
-    const resolver = settings.customDNS || DNS_SERVERS.recursive[0];
+    const _resolverBase = settings.customDNS || DNS_SERVERS.recursive[0];
+    const resolver = typeof _resolverBase === 'string'
+      ? { name: _resolverBase, ip: _resolverBase, description: 'Custom Recursive Resolver', type: 'resolver' }
+      : { ..._resolverBase, type: _resolverBase.type || 'resolver' };
 
     // Simulate packet loss with retry for the query
     if (settings.packetLoss > 0) {
@@ -285,9 +361,9 @@ class DNSResolver {
     const rtt = responseTimestamp - queryTimestamp; // Measured Round-Trip Time
     
     this.steps.push({
-      stage: 'recursive_resolver',
-      name: 'Recursive Resolver Query',
-      description: `Sending query to recursive DNS resolver (${resolver.name})`,
+      stage: 'client_to_recursive_query',
+      name: '🔄 Client → Recursive Resolver',
+      description: `Client sends query to recursive DNS resolver (${resolver.name})`,
       server: resolver,
       query: {
         domain,
@@ -296,24 +372,20 @@ class DNSResolver {
         recursionDesired: true
       },
       timing: Date.now() - stepStart,
-      timingDetails: {
-        queryTimestamp: queryTimestamp,
-        responseTimestamp: responseTimestamp,
-        rtt: rtt,
-        measured: true,
-        explanation: 'RTT measured by client: time from sending query to receiving response'
-      },
+      messageType: 'QUERY',
+      direction: 'request',
       packet: this.generateQueryPacket(domain, recordType, true),
-      explanation: 'The recursive resolver will handle all the work of finding the authoritative answer by querying multiple servers if needed.'
+      explanation: `Client asks recursive resolver: "Please find the ${recordType} record for ${domain}" with RD (Recursion Desired) = 1. The recursive resolver will handle all the work of querying root, TLD, and authoritative servers.`
     });
 
     // Simulate the recursive resolver doing its work
     // This returns the result from the authoritative server
     const result = await this.simulateRecursiveResolverWork(domain, recordType, settings);
 
-    // Check if the result is simulated (query failed)
-    const isSimulated = result.records && result.records.some(r => r.simulated);
-    const querySucceeded = !isSimulated;
+  // Treat simulated fallback records as a successful resolution (educational answer)
+  const hasRecords = result.records && result.records.length > 0;
+  const querySucceeded = hasRecords; // success if we have any records (even simulated)
+  const isSimulated = result.records && result.records.some(r => r.simulated);
 
     const responseTime = Date.now() - stepStart;
     this.steps.push({
@@ -330,15 +402,18 @@ class DNSResolver {
         rcode: querySucceeded ? 'NOERROR' : 'NXDOMAIN',
         authoritative: false,
         recursionAvailable: true,
-        error: isSimulated ? 'DNS resolution failed' : undefined
+        simulated: isSimulated || undefined,
+        error: !querySucceeded ? 'DNS resolution failed' : undefined
       },
       timing: responseTime,
       messageType: 'RESPONSE',
       direction: 'response',
       packet: this.generateResponsePacket(domain, recordType, result),
       explanation: querySucceeded
-        ? `✅ The recursive resolver successfully resolved ${domain} and returns the answer to the client. The resolver did all the work (queried root, TLD, and authoritative servers), and the client receives the final answer with RA (Recursion Available) = 1. This response will be cached for ${result.ttl} seconds. Total resolution involved 3 queries and 3 responses internally.`
-        : `❌ The recursive resolver could not resolve ${domain}. After querying root → TLD → authoritative servers, the final result is NXDOMAIN (domain does not exist) or SERVFAIL. This error is returned to the client.`
+        ? (isSimulated
+            ? `⚠️ Recursive resolver returns a simulated fallback answer for ${domain} (actual DNS query failed). Educational simulated record provided; TTL = ${result.ttl} seconds.`
+            : `✅ The recursive resolver successfully resolved ${domain} and returns the answer to the client. The resolver did all the work (queried root, TLD, and authoritative servers), and the client receives the final answer with RA (Recursion Available) = 1. This response will be cached for ${result.ttl} seconds.`)
+        : `❌ The recursive resolver could not resolve ${domain}. After querying root → TLD → authoritative servers, the final result is NXDOMAIN (domain does not exist).`
     });
 
     // Cache the result
@@ -349,210 +424,339 @@ class DNSResolver {
     }
   }
 
-  async simulateRecursiveResolverWork(domain, recordType, settings) {
-    // This simulates what the recursive resolver does internally
-    // CORRECT FLOW: Each query has a corresponding response
-    const parts = domain.split('.');
-    const tld = parts[parts.length - 1];
-    const sld = parts.slice(-2).join('.');
-
-    // Step 1: Recursive Resolver → Root Server (QUERY)
-    const rootQueryStart = Date.now();
-    await this.simulateLatency(settings.networkLatency);
-    const rootQuerySent = Date.now();
+  /**
+   * Generate delegation stages from REAL DNS queries (Live Mode)
+   * Queries actual DNS servers to determine real delegation chain
+   * @param {string} domain - The domain to resolve
+   * @param {string} recordType - The DNS record type
+   * @param {object} settings - Resolution settings
+   * @returns {Promise<Object>} Object containing delegationStages array and final result
+   */
+  async generateDelegationStagesFromRealDNS(domain, recordType, settings) {
+    console.log(`[BACKEND] Generating LIVE delegation stages for ${domain} using real DNS`);
     
-    this.steps.push({
-      stage: 'recursive_to_root_query',
-      name: '🔄 Recursive Resolver → Root Server',
-      description: 'Recursive resolver queries root server for TLD information',
-      server: DNS_SERVERS.root[0],
-      query: { domain, type: recordType, class: 'IN' },
-      timing: settings.networkLatency,
-      timingDetails: {
-        queryTimestamp: rootQueryStart,
-        sentTimestamp: rootQuerySent,
-        measured: true,
-        networkDelay: settings.networkLatency,
-        explanation: 'Query transmission time from resolver to root server'
-      },
-      messageType: 'QUERY',
-      direction: 'request',
-      explanation: `Recursive resolver asks root server: "Where can I find information about .${tld} domains?"`
-    });
-
-    // Step 2: Root Server → Recursive Resolver (RESPONSE - Referral)
-    const rootProcessingTime = 5 + Math.floor(Math.random() * 10); // Simulated server processing
-    await this.simulateLatency(settings.networkLatency + rootProcessingTime);
-    const rootResponseReceived = Date.now();
-    const rootRTT = rootResponseReceived - rootQueryStart;
+    const delegationStages = [];
     
-    this.steps.push({
-      stage: 'root_to_recursive_response',
-      name: '⬅️ Root Server → Recursive Resolver',
-      description: `Root server responds with referral to .${tld} TLD servers`,
-      server: DNS_SERVERS.root[0],
-      response: {
-        found: false,
-        referral: true,
-        nameservers: [`a.${tld}-servers.net`, `b.${tld}-servers.net`],
-        glueRecords: [
-          { name: `a.${tld}-servers.net`, ip: '192.5.6.30' },
-          { name: `b.${tld}-servers.net`, ip: '192.33.4.12' }
-        ],
-        rcode: 'NOERROR',
-        authoritative: false
-      },
-      timing: rootRTT,
-      timingDetails: {
-        responseTimestamp: rootResponseReceived,
-        rtt: rootRTT,
-        networkDelay: settings.networkLatency * 2, // Round trip
-        serverProcessing: rootProcessingTime,
-        measured: true,
-        breakdown: `RTT: ${rootRTT}ms = Network (${settings.networkLatency * 2}ms) + Server Processing (${rootProcessingTime}ms)`,
-        explanation: 'Total time from query sent to response received at recursive resolver'
-      },
-      messageType: 'RESPONSE',
-      direction: 'response',
-      explanation: `Root server responds: "I don't have the answer, but the .${tld} TLD nameservers do. Here are their addresses (glue records): a.${tld}-servers.net = 192.5.6.30"`
-    });
-
-    // Step 3: Recursive Resolver → TLD Server (QUERY)
-    const tldQueryStart = Date.now();
-    await this.simulateLatency(settings.networkLatency);
-    const tldQuerySent = Date.now();
-    
-    this.steps.push({
-      stage: 'recursive_to_tld_query',
-      name: `🔄 Recursive Resolver → .${tld} TLD Server`,
-      description: `Recursive resolver queries .${tld} TLD server for ${sld} nameservers`,
-      server: { name: `a.${tld}-servers.net`, ip: '192.5.6.30', type: 'tld' },
-      query: { domain, type: recordType, class: 'IN' },
-      timing: settings.networkLatency,
-      timingDetails: {
-        queryTimestamp: tldQueryStart,
-        sentTimestamp: tldQuerySent,
-        measured: true,
-        networkDelay: settings.networkLatency,
-        explanation: 'Query transmission time from resolver to TLD server'
-      },
-      messageType: 'QUERY',
-      direction: 'request',
-      explanation: `Recursive resolver asks TLD server: "Where can I find the authoritative nameservers for ${sld}?"`
-    });
-
-    // Step 4: TLD Server → Recursive Resolver (RESPONSE - Referral)
-    const tldProcessingTime = 8 + Math.floor(Math.random() * 15); // TLD processing time
-    await this.simulateLatency(settings.networkLatency + tldProcessingTime);
-    const tldResponseReceived = Date.now();
-    const tldRTT = tldResponseReceived - tldQueryStart;
-    
-    this.steps.push({
-      stage: 'tld_to_recursive_response',
-      name: `⬅️ .${tld} TLD Server → Recursive Resolver`,
-      description: `TLD server responds with referral to ${sld} authoritative servers`,
-      server: { name: `a.${tld}-servers.net`, ip: '192.5.6.30', type: 'tld' },
-      response: {
-        found: false,
-        referral: true,
-        nameservers: [`ns1.${sld}`, `ns2.${sld}`],
-        glueRecords: [
-          { name: `ns1.${sld}`, ip: '93.184.216.34' },
-          { name: `ns2.${sld}`, ip: '93.184.216.35' }
-        ],
-        rcode: 'NOERROR',
-        authoritative: false
-      },
-      timing: tldRTT,
-      timingDetails: {
-        responseTimestamp: tldResponseReceived,
-        rtt: tldRTT,
-        networkDelay: settings.networkLatency * 2,
-        serverProcessing: tldProcessingTime,
-        measured: true,
-        breakdown: `RTT: ${tldRTT}ms = Network (${settings.networkLatency * 2}ms) + Server Processing (${tldProcessingTime}ms)`,
-        explanation: 'Total time from query sent to response received at recursive resolver'
-      },
-      messageType: 'RESPONSE',
-      direction: 'response',
-      explanation: `TLD server responds: "The authoritative nameservers for ${sld} are ns1.${sld} and ns2.${sld}. Here are their IP addresses (glue records): ns1.${sld} = 93.184.216.34"`
-    });
-
-    // Step 5: Recursive Resolver → Authoritative Server (QUERY)
-    const authQueryStart = Date.now();
-    await this.simulateLatency(settings.networkLatency);
-    const authQuerySent = Date.now();
-    
-    this.steps.push({
-      stage: 'recursive_to_auth_query',
-      name: `🔄 Recursive Resolver → Authoritative Server`,
-      description: `Recursive resolver queries authoritative nameserver for final answer`,
-      server: { name: `ns1.${sld}`, ip: '93.184.216.34', type: 'authoritative' },
-      query: { domain, type: recordType, class: 'IN' },
-      timing: settings.networkLatency,
-      timingDetails: {
-        queryTimestamp: authQueryStart,
-        sentTimestamp: authQuerySent,
-        measured: true,
-        networkDelay: settings.networkLatency,
-        explanation: 'Query transmission time from resolver to authoritative server'
-      },
-      messageType: 'QUERY',
-      direction: 'request',
-      explanation: `Recursive resolver asks authoritative server: "What is the ${recordType} record for ${domain}?"`
-    });
-
-    // Step 6: Get actual DNS result
-    const result = await this.performActualDNSQuery(domain, recordType);
-    const isSimulated = result.records && result.records.some(r => r.simulated);
-    const querySucceeded = !isSimulated;
-
-    // Step 7: Authoritative Server → Recursive Resolver (RESPONSE - Answer)
-    const authProcessingTime = 10 + Math.floor(Math.random() * 20); // Auth server processing
-    await this.simulateLatency(settings.networkLatency + authProcessingTime);
-    const authResponseReceived = Date.now();
-    const authRTT = authResponseReceived - authQueryStart;
-    
-    this.steps.push({
-      stage: 'auth_to_recursive_response',
-      name: `⬅️ Authoritative Server → Recursive Resolver`,
-      description: querySucceeded
-        ? `Authoritative server provides final answer`
-        : `Authoritative server returns NXDOMAIN error`,
-      server: { name: `ns1.${sld}`, ip: '93.184.216.34', type: 'authoritative' },
-      response: {
-        found: querySucceeded,
-        records: querySucceeded ? result.records : [],
-        ttl: result.ttl,
-        rcode: querySucceeded ? 'NOERROR' : 'NXDOMAIN',
+    try {
+      // Query real DNS to get actual delegation chain with REAL timing data
+      const realDNSData = await realDNS.getRealDelegationChain(domain);
+      
+      console.log(`[BACKEND] Real DNS delegation levels:`, realDNSData.summary.actualDelegationLevels);
+      console.log(`[BACKEND] Non-delegated subdomains:`, realDNSData.summary.nonDelegatedSubdomains);
+      console.log(`[BACKEND] Query timing breakdown:`, realDNSData.summary.timingBreakdown);
+      
+      // Build delegation stages from real DNS data
+      const actualZones = realDNSData.zoneBoundaries.actualZones;
+      
+      for (let i = 0; i < actualZones.length; i++) {
+        const zone = actualZones[i];
+        const nextZone = i < actualZones.length - 1 ? actualZones[i + 1] : null;
+        const isLast = !nextZone;
+        
+        // Get REAL query time for this zone (not simulated!)
+        const realQueryTime = zone.queryTime || 1; // Use actual measured time
+        
+        // Construct server information from real nameservers
+        const firstNS = zone.nameservers && zone.nameservers.length > 0 
+          ? zone.nameservers[0] 
+          : `ns.${zone.zone}`;
+        
+        const serverInfo = {
+          name: firstNS,
+          ip: '0.0.0.0', // We could resolve this too if needed
+          type: zone.level,
+          domain: zone.zone,
+          description: `${zone.level} Server`,
+          isReal: true,
+          allNameservers: zone.nameservers || [],
+          realQueryTime: realQueryTime // Include actual query time in server info
+        };
+        
+        // Generate display names
+        let displayName;
+        if (zone.level === 'root') {
+          displayName = 'Root Server';
+        } else if (zone.level === 'tld') {
+          displayName = `.${zone.zone} TLD Server`;
+        } else if (zone.level === 'sld') {
+          displayName = `.${zone.zone} SLD Server`;
+        } else {
+          displayName = `Authoritative Server (${zone.zone})`;
+        }
+        
+        const queryStage = `recursive_to_${zone.level}_query`;
+        const responseStage = `${zone.level}_to_recursive_response`;
+        
+        // === QUERY STAGE === (NO SIMULATION - use real timing!)
+        delegationStages.push({
+          stage: queryStage,
+          name: `🔄 Recursive Resolver → ${displayName}`,
+          description: isLast
+            ? `Recursive resolver queries authoritative server for ${domain} information`
+            : `Recursive resolver queries ${displayName} for delegation to ${nextZone.zone}`,
+          server: serverInfo,
+          query: { domain: isLast ? domain : nextZone.zone, type: recordType, class: 'IN' },
+          timing: realQueryTime, // USE REAL MEASURED TIMING, NOT SIMULATED!
+          messageType: 'QUERY',
+          direction: 'request',
+          isRealTiming: true, // Flag to indicate this is real measured time
+          explanation: isLast
+            ? `Recursive resolver asks authoritative server: "What is the ${recordType} record for ${domain}?"`
+            : `Recursive resolver asks ${zone.level} server: "Where can I find the nameservers for ${nextZone.zone}?"`
+        });
+        
+        // === RESPONSE STAGE === (NO SIMULATION - use real timing!)
+        
+        let response;
+        if (isLast) {
+          // Final answer with IP address
+          response = {
+            answer: realDNSData.finalIP 
+              ? [{ name: domain, type: recordType, class: 'IN', ttl: 300, data: realDNSData.finalIP }]
+              : [],
+            authority: [],
+            additional: []
+          };
+        } else {
+          // Referral to next level
+          response = {
+            answer: [],
+            authority: nextZone.nameservers.map(ns => ({
+              name: nextZone.zone,
+              type: 'NS',
+              class: 'IN',
+              ttl: 172800,
+              data: ns
+            })),
+            additional: []
+          };
+        }
+        
+        delegationStages.push({
+          stage: responseStage,
+          name: `✅ ${displayName} → Recursive Resolver`,
+          description: isLast
+            ? `Authoritative server returns the ${recordType} record for ${domain}`
+            : `${displayName} provides nameserver delegation for ${nextZone.zone}`,
+          server: serverInfo,
+          response: response,
+          timing: realQueryTime, // USE REAL MEASURED TIMING, NOT SIMULATED!
+          messageType: 'RESPONSE',
+          direction: 'response',
+          isRealTiming: true, // Flag to indicate this is real measured time
+          explanation: isLast
+            ? `Authoritative server responds: "${domain} has ${recordType} record: ${realDNSData.finalIP}"`
+            : `${zone.level} server responds: "For ${nextZone.zone}, contact nameservers: ${nextZone.nameservers.slice(0, 2).join(', ')}${nextZone.nameservers.length > 2 ? '...' : ''}"`
+        });
+      }
+      
+      // Add metadata about non-delegated subdomains
+      const nonDelegated = realDNSData.summary.nonDelegatedSubdomains.filter(s => s !== '.');
+      if (nonDelegated.length > 0) {
+        console.log(`[BACKEND] Note: ${nonDelegated.join(', ')} are NOT separate zones - served by parent zone`);
+      }
+      
+      const finalResult = {
+        domain: domain,
+        type: recordType,
+        answer: realDNSData.finalIP || null,
+        allAnswers: realDNSData.allIPs || [],
+        ttl: 300,
         authoritative: true,
-        recursionAvailable: false
-      },
-      timing: authRTT,
-      timingDetails: {
-        responseTimestamp: authResponseReceived,
-        rtt: authRTT,
-        networkDelay: settings.networkLatency * 2,
-        serverProcessing: authProcessingTime,
-        measured: true,
-        breakdown: `RTT: ${authRTT}ms = Network (${settings.networkLatency * 2}ms) + Server Processing (${authProcessingTime}ms)`,
-        explanation: 'Total time from query sent to response received at recursive resolver'
-      },
-      messageType: 'RESPONSE',
-      direction: 'response',
-      packet: this.generateResponsePacket(domain, recordType, result),
-      explanation: querySucceeded
-        ? `✅ Authoritative server responds with the answer: ${domain} = ${result.records.map(r => r.address || r.value || JSON.stringify(r)).join(', ')}. This is the FINAL ANSWER with AA (Authoritative Answer) flag set. TTL = ${result.ttl} seconds.`
-        : `❌ Authoritative server responds: Domain ${domain} does not exist (NXDOMAIN). This is an authoritative answer that the domain is not configured.`
-    });
+        cached: false,
+        isRealDNS: true,
+        nonDelegatedLevels: nonDelegated,
+        // Include timing breakdown for verification
+        timingData: {
+          totalQueryTime: realDNSData.totalQueryTime,
+          aRecordQueryTime: realDNSData.aRecordQueryTime,
+          nsQueryTimes: realDNSData.summary.timingBreakdown.nsQueries,
+          timestamp: realDNSData.timestamp
+        }
+      };
+      
+      console.log(`[BACKEND] Generated ${delegationStages.length} stages from real DNS data`);
+      console.log(`[BACKEND] Total query time: ${realDNSData.totalQueryTime}ms`);
+      return { delegationStages, result: finalResult };
+      
+    } catch (error) {
+      console.error(`[BACKEND] Error getting real DNS data:`, error.message);
+      console.log(`[BACKEND] Falling back to simulated delegation stages`);
+      // Fallback to simulated stages
+      return this.generateDelegationStages(domain, recordType, settings);
+    }
+  }
+
+  /**
+   * Generate delegation stages dynamically based on domain structure
+   * @param {string} domain - The domain to resolve
+   * @param {string} recordType - The DNS record type
+   * @param {object} settings - Resolution settings
+   * @returns {Promise<Array>} Array of delegation stages (query/response pairs)
+   */
+  async generateDelegationStages(domain, recordType, settings) {
+    const parsed = parseDomain(domain);
+    console.log(`[BACKEND] Generating delegation stages for ${domain}`);
+    console.log(`[BACKEND] Parsed hierarchy levels:`, parsed.hierarchy.map(h => `${h.type}:${h.fullDomain}`));
+    const delegationStages = [];
+
+    // Iterate through each level of the DNS hierarchy (skip root for queries, start from TLD)
+    for (let i = 0; i < parsed.hierarchy.length; i++) {
+      const level = parsed.hierarchy[i];
+      const isLast = i === parsed.hierarchy.length - 1;
+      const isRoot = level.type === 'root';
+      const nextLevel = i < parsed.hierarchy.length - 1 ? parsed.hierarchy[i + 1] : null;
+
+      // Construct server information
+      const serverInfo = {
+        name: isRoot ? 'a.root-servers.net' : `ns.${level.fullDomain}`,
+        ip: isRoot ? '198.41.0.4' : `192.168.${i}.1`,
+        type: level.type,
+        domain: level.fullDomain,
+        description: level.description || `${level.type} Server`
+      };
+
+      // Generate unique stage identifiers
+      const queryStage = `recursive_to_${level.type === 'intermediate' ? level.type + '_' + i : level.type}_query`;
+      const responseStage = `${level.type === 'intermediate' ? level.type + '_' + i : level.type}_to_recursive_response`;
+
+      // Generate display names for better UI
+      let displayName;
+      if (level.type === 'root') {
+        displayName = 'Root Server';
+      } else if (level.type === 'tld') {
+        displayName = `.${level.name} TLD Server`;
+      } else if (level.type === 'sld') {
+        displayName = `.${level.fullDomain.slice(0, -1)} SLD Server`;
+      } else if (level.type === 'authoritative') {
+        displayName = `Authoritative Server`;
+      } else {
+        displayName = `${level.fullDomain.slice(0, -1)} NS Server`;
+      }
+
+      // === QUERY STAGE ===
+      await this.simulateLatency(settings.networkLatency);
+      delegationStages.push({
+        stage: queryStage,
+        name: `🔄 Recursive Resolver → ${displayName}`,
+        description: isRoot 
+          ? `Recursive resolver queries root server for TLD information`
+          : `Recursive resolver queries ${displayName} for ${nextLevel ? nextLevel.fullDomain : domain} information`,
+        server: serverInfo,
+        query: { domain, type: recordType, class: 'IN' },
+        timing: settings.networkLatency,
+        messageType: 'QUERY',
+        direction: 'request',
+        explanation: isRoot
+          ? `Recursive resolver asks root server: "Where can I find information about .${parsed.hierarchy[1]?.name} domains?"`
+          : isLast
+            ? `Recursive resolver asks authoritative server: "What is the ${recordType} record for ${domain}?"`
+            : `Recursive resolver asks ${level.type} server: "Where can I find the nameservers for ${nextLevel.fullDomain}?"`
+      });
+
+      // === RESPONSE STAGE ===
+      await this.simulateLatency(settings.networkLatency);
+
+      if (isLast) {
+        // Final answer from authoritative server
+        const result = await this.performActualDNSQuery(domain, recordType);
+  const isSimulated = result.records && result.records.some(r => r.simulated);
+  const querySucceeded = result.records && result.records.length > 0; // success if any records present
+
+        delegationStages.push({
+          stage: responseStage,
+          name: `⬅️ ${displayName} → Recursive Resolver`,
+          description: querySucceeded
+            ? `${displayName} provides final answer`
+            : `${displayName} returns error`,
+          server: serverInfo,
+          response: {
+            found: querySucceeded,
+            records: querySucceeded ? result.records : [],
+            ttl: result.ttl,
+            rcode: querySucceeded ? 'NOERROR' : 'NXDOMAIN',
+            authoritative: true,
+            recursionAvailable: false,
+            simulated: isSimulated || undefined
+          },
+          timing: settings.networkLatency,
+          messageType: 'RESPONSE',
+          direction: 'response',
+          packet: this.generateResponsePacket(domain, recordType, result),
+          explanation: querySucceeded
+            ? (isSimulated
+                ? `⚠️ Authoritative server provides a simulated fallback answer (actual DNS query failed). ${domain} = ${result.records.map(r => r.address || r.value || JSON.stringify(r)).join(', ')}.`
+                : `✅ Authoritative server responds with the answer: ${domain} = ${result.records.map(r => r.address || r.value || JSON.stringify(r)).join(', ')}. This is the FINAL ANSWER with AA (Authoritative Answer) flag set. TTL = ${result.ttl} seconds.`)
+            : `❌ Authoritative server responds: Domain ${domain} does not exist (NXDOMAIN).`
+        });
+
+        return { delegationStages, result };
+      } else {
+        // Referral response
+        const referralTarget = nextLevel.fullDomain;
+        const nextDisplayName = nextLevel.type === 'tld' ? `.${nextLevel.name} TLD Server` 
+          : nextLevel.type === 'sld' ? `.${nextLevel.fullDomain.slice(0, -1)} SLD Server`
+          : nextLevel.type === 'authoritative' ? 'Authoritative Server'
+          : `${nextLevel.fullDomain.slice(0, -1)} NS Server`;
+        
+        delegationStages.push({
+          stage: responseStage,
+          name: `⬅️ ${displayName} → Recursive Resolver`,
+          description: `${displayName} responds with referral to ${nextDisplayName}`,
+          server: serverInfo,
+          response: {
+            found: false,
+            referral: true,
+            nameservers: [`ns1.${referralTarget}`, `ns2.${referralTarget}`],
+            glueRecords: [
+              { name: `ns1.${referralTarget}`, ip: `192.168.${i + 1}.1` },
+              { name: `ns2.${referralTarget}`, ip: `192.168.${i + 1}.2` }
+            ],
+            rcode: 'NOERROR',
+            authoritative: false
+          },
+          timing: settings.networkLatency,
+          messageType: 'RESPONSE',
+          direction: 'response',
+          explanation: isRoot
+            ? `Root server responds: "I don't have the answer, but the .${nextLevel.name} TLD nameservers do. Here are their addresses (glue records): ns1.${referralTarget} = 192.168.${i + 1}.1"`
+            : `${level.type} server responds: "The nameservers for ${referralTarget} are ns1.${referralTarget} and ns2.${referralTarget}. Here are their IP addresses (glue records)."`
+        });
+      }
+    }
+
+    console.log(`[BACKEND] Generated ${delegationStages.length} delegation stages`);
+    console.log(`[BACKEND] Stage names:`, delegationStages.map(s => s.stage));
+    return { delegationStages, result: null };
+  }
+
+  async simulateRecursiveResolverWork(domain, recordType, settings) {
+    // NEW: Use dynamic delegation stage generation based on domain structure
+    // This properly handles multi-level domains like ims.iitgn.ac.in
+    
+    // Check if we should use real DNS (live mode)
+    const useRealDNS = settings.useRealDNS || settings.mode === 'live';
+    
+    let delegationStages, finalResult;
+    
+    if (useRealDNS) {
+      console.log(`[BACKEND] Using REAL DNS queries for ${domain}`);
+      ({ delegationStages, result: finalResult } = await this.generateDelegationStagesFromRealDNS(domain, recordType, settings));
+    } else {
+      console.log(`[BACKEND] Using SIMULATED DNS for ${domain}`);
+      ({ delegationStages, result: finalResult } = await this.generateDelegationStages(domain, recordType, settings));
+    }
+    
+    // Add all delegation stages to the steps array
+    delegationStages.forEach(stage => this.steps.push(stage));
 
     // DNSSEC validation if enabled (happens during the above queries)
     if (settings.dnssecEnabled) {
       await this.simulateDNSSECValidation(domain, recordType, settings);
     }
 
-    // Return the result so the recursive resolver can use it
-    return result;
+    // Return the final result
+    return finalResult;
   }
 
   async simulateDNSSECValidation(domain, recordType, settings) {
@@ -740,7 +944,7 @@ class DNSResolver {
       stage: 'client_to_root_query',
       name: '🔄 Client → Root Server',
       description: 'Client queries root server directly (iterative mode)',
-      server: DNS_SERVERS.root[0],
+      server: { ...DNS_SERVERS.root[0], type: 'root' },
       query: {
         domain,
         type: recordType,
@@ -760,7 +964,7 @@ class DNSResolver {
       stage: 'root_to_client_response',
       name: '⬅️ Root Server → Client',
       description: `Root server responds with referral to .${tld} TLD servers`,
-      server: DNS_SERVERS.root[0],
+      server: { ...DNS_SERVERS.root[0], type: 'root' },
       response: {
         found: false,
         referral: true,
@@ -831,8 +1035,8 @@ class DNSResolver {
     await this.simulateLatency(settings.networkLatency);
 
     const result = await this.performActualDNSQuery(domain, recordType);
-    const isSimulated = result.records && result.records.some(r => r.simulated);
-    const querySucceeded = !isSimulated;
+  const isSimulated = result.records && result.records.some(r => r.simulated);
+  const querySucceeded = result.records && result.records.length > 0; // success if any records present
 
     this.steps.push({
       stage: 'client_to_auth_query',
@@ -868,15 +1072,18 @@ class DNSResolver {
         rcode: querySucceeded ? 'NOERROR' : 'NXDOMAIN',
         authoritative: true,
         recursionAvailable: false,
-        error: isSimulated ? 'DNS resolution failed' : undefined
+        simulated: isSimulated || undefined,
+        error: !querySucceeded ? 'DNS resolution failed' : undefined
       },
       timing: settings.networkLatency,
       messageType: 'RESPONSE',
       direction: 'response',
       packet: this.generateResponsePacket(domain, recordType, result),
       explanation: querySucceeded
-        ? `✅ Authoritative server responds with the FINAL ANSWER: ${domain} = ${result.records.map(r => r.address || r.value || JSON.stringify(r)).join(', ')}. The AA (Authoritative Answer) flag is set to 1. Resolution complete! TTL = ${result.ttl} seconds. The client now has the answer after following 3 referrals.`
-        : `❌ Authoritative server authoritatively states that ${domain} does not exist (NXDOMAIN). This is a definitive answer that the domain is not configured in this zone.`
+        ? (isSimulated
+            ? `⚠️ Authoritative server returns a simulated fallback answer (actual DNS query failed). ${domain} = ${result.records.map(r => r.address || r.value || JSON.stringify(r)).join(', ')}.`
+            : `✅ Authoritative server responds with the FINAL ANSWER: ${domain} = ${result.records.map(r => r.address || r.value || JSON.stringify(r)).join(', ')}. The AA (Authoritative Answer) flag is set to 1. Resolution complete! TTL = ${result.ttl} seconds.`)
+        : `❌ Authoritative server states that ${domain} does not exist (NXDOMAIN).`
     });
 
     // Cache the result
