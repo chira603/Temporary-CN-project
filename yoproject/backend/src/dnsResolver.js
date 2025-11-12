@@ -330,6 +330,8 @@ class DNSResolver {
 
   async recursiveResolution(domain, recordType, settings) {
     const stepStart = Date.now();
+    const queryTimestamp = Date.now(); // Client-side timestamp when query is sent
+    
     await this.simulateLatency(settings.networkLatency);
 
     // Query recursive resolver
@@ -354,6 +356,9 @@ class DNSResolver {
         }
       }
     }
+    
+    const responseTimestamp = Date.now(); // Client-side timestamp when response received
+    const rtt = responseTimestamp - queryTimestamp; // Measured Round-Trip Time
     
     this.steps.push({
       stage: 'client_to_recursive_query',
